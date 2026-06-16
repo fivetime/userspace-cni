@@ -1,0 +1,94 @@
+name: "Build image from main"
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Which platforms to build'
+        required: false
+        default: all
+        type: choice
+        options: [all, amd64, arm64]
+
+concurrency:
+  group: build-from-main-${{ github.ref }}
+  cancel-in-progress: true     # dev 构建：同分支新 push 取消旧构建
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # docker/Dockerfile 是 Go 交叉编译（FROM --platform=$BUILDPLATFORM），重活在
+  # build 平台上完成；只有 runtime 层 `alpine` 镜像在目标架构跑、QEMU 需要参与。
+  # 单个 ubuntu-latest + QEMU 即可一次出全部架构。
+  # 注：DPDK 上游对 ppc64le / s390x 支持不完整，本仓库只构 amd64 + arm64。
+  build:
+    runs-on: ubuntu-latest      # 如有自建 runner 可改为 self-hosted
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Resolve image / sha / platforms
+        id: prep
+        run: |
+          set -euo pipefail
+          echo "image=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA:0:8}" >> "$GITHUB_OUTPUT"
+          p="${{ inputs.platforms }}"
+          [ -z "$p" ] && p=all
+          case "$p" in
+            all)   plats="linux/amd64,linux/arm64" ;;
+            amd64) plats="linux/amd64" ;;
+            arm64) plats="linux/arm64" ;;
+            *) echo "::error::unknown platforms input: $p"; exit 1 ;;
+          esac
+          echo "platforms=$plats" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          platforms: ${{ steps.prep.outputs.platforms }}
+          push: true
+          provenance: false
+          sbom: false
+          build-args: |
+            VERSION=${{ steps.prep.outputs.short_sha }}
+          # :main 永远滚动指向最新 main；:<sha> 固定可追溯到具体提交。
+          tags: |
+            ${{ steps.prep.outputs.image }}:main
+            ${{ steps.prep.outputs.image }}:${{ steps.prep.outputs.short_sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=main
+          cache-to: type=gha,mode=max,scope=main
+
+      - name: Inspect
+        run: docker buildx imagetools inspect ${{ steps.prep.outputs.image }}:main
