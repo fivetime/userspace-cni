@@ -70,17 +70,29 @@ func (cniOvs CniOvs) AddOnHost(conf *types.NetConf,
 
 	logging.Infof("OVS AddOnHost: ENTER - Container %s Iface %s", args.ContainerID[:12], args.IfName)
 
+	// Resolve OVN logical port (OvnPort) and requested MAC from CNI args. When
+	// an OvnPort is supplied this attachment binds to a pre-existing Neutron/OVN
+	// logical port, so the port goes on the OVN integration bridge (br-int) and
+	// ovn-controller programs the datapath.
+	ovnPort, ovnMac := resolveOvnArgs(conf, args)
+
 	//
 	// Mandatory attribute of "ovs-vsctl add-port" is a BridgeName. So even if
 	// NetType is not set to "bridge", "conf.HostConf.BridgeConf.BridgeName"
 	// should be set. If it is not, set it to default value.
 	//
 	if conf.HostConf.BridgeConf.BridgeName == "" {
-		conf.HostConf.BridgeConf.BridgeName = defaultBridge
+		if ovnPort != "" {
+			conf.HostConf.BridgeConf.BridgeName = ovnIntegrationBridge
+		} else {
+			conf.HostConf.BridgeConf.BridgeName = defaultBridge
+		}
 	}
 
 	//
-	// Create bridge before creating Interface
+	// Create bridge before creating Interface. When binding to OVN the bridge
+	// (br-int) is owned by OVN and already exists; addLocalNetworkBridge only
+	// creates it when missing, so this stays a no-op in that case.
 	//
 	err = addLocalNetworkBridge(conf, args, &data)
 	if err != nil {
@@ -92,7 +104,7 @@ func (cniOvs CniOvs) AddOnHost(conf *types.NetConf,
 	// Create Local Interface
 	//
 	if conf.HostConf.IfType == "vhostuser" {
-		err = addLocalDeviceVhost(conf, args, sharedDir, &data)
+		err = addLocalDeviceVhost(conf, args, sharedDir, &data, ovnPort, ovnMac)
 	} else {
 		err = errors.New("ERROR: Unknown HostConf.IfType:" + conf.HostConf.IfType)
 	}
@@ -283,7 +295,10 @@ func setSharedDirGroup(sharedDir string, group string) error {
 	return nil
 }
 
-func addLocalDeviceVhost(conf *types.NetConf, args *skel.CmdArgs, actualSharedDir string, data *OvsSavedData) error {
+// ovnPort, when non-empty, binds the port to a Neutron/OVN logical port (via
+// external_ids:iface-id). ovnMac, when non-empty, is the Neutron-assigned MAC
+// propagated to the in-pod DPDK app via the saved config data.
+func addLocalDeviceVhost(conf *types.NetConf, args *skel.CmdArgs, actualSharedDir string, data *OvsSavedData, ovnPort, ovnMac string) error {
 	var err error
 	var vhostName string
 
@@ -313,11 +328,22 @@ func addLocalDeviceVhost(conf *types.NetConf, args *skel.CmdArgs, actualSharedDi
 		clientMode = true
 	}
 
-	// ovs-vsctl add-port
+	// Create the dpdkvhostuser(client) port on the OVS bridge.
 	if vhostName, err = createVhostPort(sharedDir,
 		conf.HostConf.VhostConf.Socketfile,
 		clientMode,
-		conf.HostConf.BridgeConf.BridgeName); err == nil {
+		conf.HostConf.BridgeConf.BridgeName,
+		vhostPortConfig{
+			containerID:  args.ContainerID,
+			ifName:       args.IfName,
+			ovnPort:      ovnPort,
+			mtu:          conf.HostConf.MTU,
+			vlanID:       conf.HostConf.BridgeConf.VlanId,
+			trunks:       conf.HostConf.BridgeConf.Trunks,
+			vlanMode:     conf.HostConf.BridgeConf.VlanMode,
+			ingressRate:  conf.HostConf.VhostConf.IngressPolicingRate,
+			ingressBurst: conf.HostConf.VhostConf.IngressPolicingBurst,
+		}); err == nil {
 		if vhostPortMac, err := getVhostPortMac(vhostName); err == nil {
 			data.VhostMac = vhostPortMac
 		} else {
@@ -325,7 +351,18 @@ func addLocalDeviceVhost(conf *types.NetConf, args *skel.CmdArgs, actualSharedDi
 		}
 
 		data.Vhostname = vhostName
-		data.IfMac = generateRandomMacAddress()
+		// The in-pod DPDK app sources traffic with data.IfMac (delivered via the
+		// config data). Precedence: annotation MAC (e.g. Neutron/OVN) > a fixed
+		// MAC in conf > a generated one. OVS Interface.mac is not set here — the
+		// schema only honors it for internal ports, not dpdkvhostuser.
+		switch {
+		case ovnMac != "":
+			data.IfMac = ovnMac
+		case conf.HostConf.MAC != "":
+			data.IfMac = conf.HostConf.MAC
+		default:
+			data.IfMac = generateRandomMacAddress()
+		}
 	} else {
 		return err
 	}
@@ -415,17 +452,10 @@ func addLocalNetworkBridge(conf *types.NetConf, args *skel.CmdArgs, data *OvsSav
 
 	if found := findBridge(conf.HostConf.BridgeConf.BridgeName); !found {
 		logging.Debugf("addLocalNetworkBridge(): Bridge %s not found, creating", conf.HostConf.BridgeConf.BridgeName)
+		// Newly created bridges default to fail_mode=standalone, which
+		// installs a NORMAL flow automatically. No need for an ovs-ofctl
+		// pass to set up basic L2 forwarding.
 		err = createBridge(conf.HostConf.BridgeConf.BridgeName)
-
-		if err == nil {
-			// Bridge is always created because it is required for interface.
-			// If bridge type was actually called out, then set the
-			// bridge up as L2 bridge. Otherwise, a controller is
-			// responsible for writing flows to OvS.
-			if conf.HostConf.NetType == "bridge" {
-				err = configL2Bridge(conf.HostConf.BridgeConf.BridgeName)
-			}
-		}
 	} else {
 		logging.Debugf("addLocalNetworkBridge(): Bridge %s exists, skip creating", conf.HostConf.BridgeConf.BridgeName)
 	}
