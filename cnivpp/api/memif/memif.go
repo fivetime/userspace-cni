@@ -16,20 +16,19 @@
 // govpp API on real-world use-cases.
 package vppmemif
 
-// Generates Go bindings for all VPP APIs located in the json directory.
-//go:generate go run go.fd.io/govpp/cmd/binapi-generator --output-dir=../../bin_api
-
 import (
 	// "net"
 
+	"fmt"
 	"os"
 	"path/filepath"
 
 	"go.fd.io/govpp/api"
 
-	"github.com/intel/userspace-cni-network-plugin/cnivpp/bin_api/interface_types"
-	"github.com/intel/userspace-cni-network-plugin/cnivpp/bin_api/memif"
 	"github.com/intel/userspace-cni-network-plugin/logging"
+	"go.fd.io/govpp/binapi/ethernet_types"
+	"go.fd.io/govpp/binapi/interface_types"
+	"go.fd.io/govpp/binapi/memif"
 )
 
 //
@@ -61,29 +60,62 @@ var roleStr = [...]string{"master", "slave "}
 // API Functions
 //
 
-// Attempt to create a MemIf Interface.
-// Input:
-//
-//	ch api.Channel
-//	socketId uint32
-//	role MemifRole - RoleMaster or RoleSlave
-func CreateMemifInterface(ch api.Channel, socketId uint32, role memif.MemifRole, mode memif.MemifMode) (swIfIndex interface_types.InterfaceIndex, err error) {
+// CreateParams holds the inputs for CreateMemifInterface. Zero-valued tuning
+// fields fall back to VPP's defaults (see CreateMemifInterface).
+type CreateParams struct {
+	SocketID   uint32
+	Role       memif.MemifRole
+	Mode       memif.MemifMode
+	RxQueues   uint8  // 0 -> 1
+	TxQueues   uint8  // 0 -> 1
+	RingSize   uint32 // 0 -> 1024 (must be a power of 2)
+	BufferSize uint16 // 0 -> 2048
+	Secret     string // optional, max 24 chars
+	NoZeroCopy bool
+	UseDma     bool
+	HwAddr     string // optional fixed MAC (aa:bb:cc:dd:ee:ff); "" -> VPP picks one
+}
 
-	// Populate the Add Structure
-	req := &memif.MemifCreate{
-		Role:     role,
-		Mode:     mode,
-		RxQueues: 1,
-		TxQueues: 1,
-		ID:       0,
-		SocketID: socketId,
-		//Secret: "",
-		RingSize:   1024,
-		BufferSize: 2048,
-		//HwAddr: "",
+// Attempt to create a MemIf Interface via memif_create_v2 (memif_create is
+// deprecated). Unset tuning knobs default to VPP's documented defaults.
+func CreateMemifInterface(ch api.Channel, p CreateParams) (swIfIndex interface_types.InterfaceIndex, err error) {
+
+	if p.RxQueues == 0 {
+		p.RxQueues = 1
+	}
+	if p.TxQueues == 0 {
+		p.TxQueues = 1
+	}
+	if p.RingSize == 0 {
+		p.RingSize = 1024
+	}
+	if p.BufferSize == 0 {
+		p.BufferSize = 2048
 	}
 
-	reply := &memif.MemifCreateReply{}
+	// Populate the Add Structure
+	req := &memif.MemifCreateV2{
+		Role:       p.Role,
+		Mode:       p.Mode,
+		RxQueues:   p.RxQueues,
+		TxQueues:   p.TxQueues,
+		ID:         0,
+		SocketID:   p.SocketID,
+		RingSize:   p.RingSize,
+		BufferSize: p.BufferSize,
+		NoZeroCopy: p.NoZeroCopy,
+		UseDma:     p.UseDma,
+		Secret:     p.Secret,
+	}
+	if p.HwAddr != "" {
+		hw, perr := ethernet_types.ParseMacAddress(p.HwAddr)
+		if perr != nil {
+			return 0, fmt.Errorf("memif: invalid HwAddr %q: %w", p.HwAddr, perr)
+		}
+		req.HwAddr = hw
+	}
+
+	reply := &memif.MemifCreateV2Reply{}
 
 	err = ch.SendRequest(req).ReceiveReply(reply)
 
@@ -222,14 +254,14 @@ func CreateMemifSocket(ch api.Channel, socketFile string) (socketId uint32, err 
 		}
 	}
 
-	// Populate the Request Structure
-	req := &memif.MemifSocketFilenameAddDel{
+	// Populate the Request Structure (memif_socket_filename_add_del is deprecated)
+	req := &memif.MemifSocketFilenameAddDelV2{
 		IsAdd:          true,
 		SocketID:       socketId,
 		SocketFilename: socketFile,
 	}
 
-	reply := &memif.MemifSocketFilenameAddDelReply{}
+	reply := &memif.MemifSocketFilenameAddDelV2Reply{}
 
 	err = ch.SendRequest(req).ReceiveReply(reply)
 
@@ -246,13 +278,13 @@ func CreateMemifSocket(ch api.Channel, socketFile string) (socketId uint32, err 
 
 // API to Delete the MemIf Socketfile.
 func DeleteMemifSocket(ch api.Channel, socketId uint32) (err error) {
-	// Populate the Add Structure
-	req := &memif.MemifSocketFilenameAddDel{
+	// Populate the Add Structure (memif_socket_filename_add_del is deprecated)
+	req := &memif.MemifSocketFilenameAddDelV2{
 		IsAdd:    false,
 		SocketID: socketId,
 	}
 
-	reply := &memif.MemifSocketFilenameAddDelReply{}
+	reply := &memif.MemifSocketFilenameAddDelV2Reply{}
 
 	err = ch.SendRequest(req).ReceiveReply(reply)
 

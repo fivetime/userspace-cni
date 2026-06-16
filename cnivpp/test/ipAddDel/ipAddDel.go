@@ -16,9 +16,6 @@
 // govpp API on real-world use-cases.
 package main
 
-// Generates Go bindings for all VPP APIs located in the json directory.
-//go:generate binapi-generator --input-dir=../../bin_api --output-dir=../../bin_api
-
 import (
 	"fmt"
 	_ "net"
@@ -33,8 +30,8 @@ import (
 	vppinfra "github.com/intel/userspace-cni-network-plugin/cnivpp/api/infra"
 	vppinterface "github.com/intel/userspace-cni-network-plugin/cnivpp/api/interface"
 	vppmemif "github.com/intel/userspace-cni-network-plugin/cnivpp/api/memif"
-	"github.com/intel/userspace-cni-network-plugin/cnivpp/bin_api/interface_types"
-	"github.com/intel/userspace-cni-network-plugin/cnivpp/bin_api/memif"
+	"go.fd.io/govpp/binapi/interface_types"
+	"go.fd.io/govpp/binapi/memif"
 )
 
 // Constants
@@ -91,7 +88,7 @@ func main() {
 	}
 
 	// Create MemIf Interface
-	swIfIndex, err = vppmemif.CreateMemifInterface(vppCh.Ch, memifSocketId, memifRole, memifMode)
+	swIfIndex, err = vppmemif.CreateMemifInterface(vppCh.Ch, vppmemif.CreateParams{SocketID: memifSocketId, Role: memifRole, Mode: memifMode})
 	if err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)

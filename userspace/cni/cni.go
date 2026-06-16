@@ -198,7 +198,7 @@ func CmdAdd(args *skel.CmdArgs, exec invoke.Exec, kubeClient kubernetes.Interfac
 	} else if netConf.HostConf.Engine == "ovs-dpdk" {
 		err = ovs.AddOnHost(netConf, args, kubeClient, sharedDir, result)
 	} else {
-		err = fmt.Errorf("ERROR: Unknown Host Engine:" + netConf.HostConf.Engine)
+		err = fmt.Errorf("ERROR: Unknown Host Engine: %s", netConf.HostConf.Engine)
 	}
 	if err != nil {
 		_ = logging.Errorf("cmdAdd: Host ERROR - %v", err)
@@ -259,7 +259,7 @@ func CmdAdd(args *skel.CmdArgs, exec invoke.Exec, kubeClient kubernetes.Interfac
 	} else if containerEngine == "ovs-dpdk" {
 		_, err = ovs.AddOnContainer(netConf, args, kubeClient, sharedDir, pod, result)
 	} else {
-		err = fmt.Errorf("ERROR: Unknown Container Engine:" + containerEngine)
+		err = fmt.Errorf("ERROR: Unknown Container Engine: %s", containerEngine)
 	}
 	if err != nil {
 		_ = logging.Errorf("cmdAdd: Container ERROR - %v", err)
@@ -325,7 +325,7 @@ func CmdDel(args *skel.CmdArgs, exec invoke.Exec, kubeClient kubernetes.Interfac
 	} else if netConf.HostConf.Engine == "ovs-dpdk" {
 		err = ovs.DelFromHost(netConf, args, sharedDir)
 	} else {
-		err = fmt.Errorf("ERROR: Unknown Host Engine:" + netConf.HostConf.Engine)
+		err = fmt.Errorf("ERROR: Unknown Host Engine: %s", netConf.HostConf.Engine)
 	}
 	if err != nil {
 		_ = logging.Errorf("cmdDel: Host ERROR - %v", err)
@@ -350,7 +350,7 @@ func CmdDel(args *skel.CmdArgs, exec invoke.Exec, kubeClient kubernetes.Interfac
 	} else if containerEngine == "ovs-dpdk" {
 		err = ovs.DelFromContainer(netConf, args, sharedDir, pod)
 	} else {
-		err = fmt.Errorf("ERROR: Unknown Container Engine:" + containerEngine)
+		err = fmt.Errorf("ERROR: Unknown Container Engine: %s", containerEngine)
 	}
 	if err != nil {
 		_ = logging.Errorf("cmdDel: Container ERROR - %v", err)

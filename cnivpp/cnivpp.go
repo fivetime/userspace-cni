@@ -28,6 +28,8 @@ package cnivpp
 import (
 	"errors"
 	"fmt"
+	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 
@@ -41,11 +43,12 @@ import (
 	vppinfra "github.com/intel/userspace-cni-network-plugin/cnivpp/api/infra"
 	vppinterface "github.com/intel/userspace-cni-network-plugin/cnivpp/api/interface"
 	vppmemif "github.com/intel/userspace-cni-network-plugin/cnivpp/api/memif"
-	"github.com/intel/userspace-cni-network-plugin/cnivpp/bin_api/interface_types"
-	"github.com/intel/userspace-cni-network-plugin/cnivpp/bin_api/memif"
+	vppvhostuser "github.com/intel/userspace-cni-network-plugin/cnivpp/api/vhostuser"
 	"github.com/intel/userspace-cni-network-plugin/logging"
 	"github.com/intel/userspace-cni-network-plugin/pkg/configdata"
 	"github.com/intel/userspace-cni-network-plugin/pkg/types"
+	"go.fd.io/govpp/binapi/interface_types"
+	"go.fd.io/govpp/binapi/memif"
 )
 
 // Constants
@@ -82,6 +85,8 @@ func (cniVpp CniVpp) AddOnHost(conf *types.NetConf,
 	//
 	if conf.HostConf.IfType == "memif" {
 		err = addLocalDeviceMemif(vppCh, conf, args, sharedDir, &data)
+	} else if conf.HostConf.IfType == "vhostuser" {
+		err = addLocalDeviceVhostUser(vppCh, conf, args, sharedDir, &data)
 	} else {
 		err = errors.New("ERROR: Unknown HostConf.IfType:" + conf.HostConf.IfType)
 	}
@@ -97,6 +102,17 @@ func (cniVpp CniVpp) AddOnHost(conf *types.NetConf,
 	if err != nil {
 		logging.Debugf("AddOnHost(vpp): Error bringing interface UP: %v", err)
 		return err
+	}
+
+	//
+	// Set interface MTU if requested
+	//
+	if conf.HostConf.MTU > 0 {
+		err = vppinterface.SetMtu(vppCh.Ch, data.InterfaceSwIfIndex, uint32(conf.HostConf.MTU))
+		if err != nil {
+			logging.Debugf("AddOnHost(vpp): Error setting MTU: %v", err)
+			return err
+		}
 	}
 
 	//
@@ -229,10 +245,9 @@ func (cniVpp CniVpp) DelFromHost(conf *types.NetConf, args *skel.CmdArgs, shared
 	if conf.HostConf.IfType == "memif" {
 		return delLocalDeviceMemif(vppCh, conf, args, sharedDir, &data)
 	} else if conf.HostConf.IfType == "vhostuser" {
-		return fmt.Errorf("GOOD: Found HostConf.Type:" + conf.HostConf.IfType)
-	} else {
-		return fmt.Errorf("ERROR: Unknown HostConf.Type:" + conf.HostConf.IfType)
+		return delLocalDeviceVhostUser(vppCh, conf, args, sharedDir, &data)
 	}
+	return fmt.Errorf("ERROR: Unknown HostConf.IfType: %s", conf.HostConf.IfType)
 }
 
 func (cniVpp CniVpp) DelFromContainer(conf *types.NetConf, args *skel.CmdArgs, sharedDir string, pod *v1.Pod) error {
@@ -254,6 +269,94 @@ func getMemifSocketfileName(conf *types.NetConf,
 	return filepath.Join(sharedDir, conf.HostConf.MemifConf.Socketfile)
 }
 
+func getVhostSocketfileName(conf *types.NetConf,
+	sharedDir string,
+	containerID string,
+	ifName string) string {
+	if conf.HostConf.VhostConf.Socketfile == "" {
+		conf.HostConf.VhostConf.Socketfile = fmt.Sprintf("%s-%s", containerID[:12], ifName)
+	}
+	return filepath.Join(sharedDir, conf.HostConf.VhostConf.Socketfile)
+}
+
+func addLocalDeviceVhostUser(vppCh vppinfra.ConnectionData,
+	conf *types.NetConf,
+	args *skel.CmdArgs,
+	sharedDir string,
+	data *VppSavedData) (err error) {
+
+	socketPath := getVhostSocketfileName(conf, sharedDir, args.ContainerID, args.IfName)
+
+	// VPP "server" mode creates the socket file (in sharedDir, which the Pod
+	// has mounted); "client" mode connects to a socket the peer creates.
+	// Default to server so the socket exists for the Pod to use.
+	isServer := true
+	if conf.HostConf.VhostConf.Mode == "client" {
+		isServer = false
+	}
+
+	data.InterfaceSwIfIndex, err = vppvhostuser.CreateVhostUserInterface(vppCh.Ch, vppvhostuser.CreateParams{
+		IsServer:       isServer,
+		SockFilename:   socketPath,
+		EnableGso:      conf.HostConf.VhostConf.EnableGso,
+		EnablePacked:   conf.HostConf.VhostConf.EnablePacked,
+		EnableEventIdx: conf.HostConf.VhostConf.EnableEventIdx,
+		MAC:            conf.HostConf.MAC,
+	})
+	if err != nil {
+		logging.Debugf("addLocalDeviceVhostUser(vpp): Error creating vhost-user interface: %v", err)
+		return err
+	}
+
+	// In server mode VPP creates the socket; apply the requested group so a
+	// non-root in-pod app can reach it. In client mode VPP does not create the
+	// socket (the app does), so there is nothing to chgrp here.
+	if isServer && conf.HostConf.VhostConf.Group != "" {
+		if err := chgrpSocket(socketPath, conf.HostConf.VhostConf.Group); err != nil {
+			logging.Errorf("addLocalDeviceVhostUser(vpp): set socket group: %v", err)
+		}
+	}
+
+	if dbgInterface {
+		logging.Verbosef("VHOSTUSER %d %s %s ", data.InterfaceSwIfIndex, "created", args.IfName)
+		vppvhostuser.DumpVhostUser(vppCh.Ch)
+	}
+
+	return nil
+}
+
+// chgrpSocket changes the group ownership of the vhost-user socket file so a
+// non-root in-pod app (running with that supplementary group) can connect.
+func chgrpSocket(socketPath, group string) error {
+	groupInfo, err := user.LookupGroup(group)
+	if err != nil {
+		return err
+	}
+	gid, err := strconv.Atoi(groupInfo.Gid)
+	if err != nil {
+		return err
+	}
+	return os.Chown(socketPath, -1, gid)
+}
+
+func delLocalDeviceVhostUser(vppCh vppinfra.ConnectionData,
+	conf *types.NetConf,
+	args *skel.CmdArgs,
+	sharedDir string,
+	data *VppSavedData) error {
+
+	err := vppvhostuser.DeleteVhostUserInterface(vppCh.Ch, data.InterfaceSwIfIndex)
+	if err != nil {
+		logging.Debugf("delLocalDeviceVhostUser(vpp): Error deleting vhost-user interface: %v", err)
+		return err
+	}
+
+	// Best-effort cleanup of the socket file VPP created in sharedDir.
+	_ = configdata.FileCleanup("", getVhostSocketfileName(conf, sharedDir, args.ContainerID, args.IfName))
+
+	return nil
+}
+
 func addLocalDeviceMemif(vppCh vppinfra.ConnectionData,
 	conf *types.NetConf,
 	args *skel.CmdArgs,
@@ -272,7 +375,7 @@ func addLocalDeviceMemif(vppCh vppinfra.ConnectionData,
 	} else if conf.HostConf.MemifConf.Role == "slave" {
 		memifRole = vppmemif.RoleSlave
 	} else {
-		return fmt.Errorf("ERROR: Invalid MEMIF Role:" + conf.HostConf.MemifConf.Role)
+		return fmt.Errorf("ERROR: Invalid MEMIF Role: %s", conf.HostConf.MemifConf.Role)
 	}
 
 	if conf.HostConf.MemifConf.Mode == "" {
@@ -285,7 +388,7 @@ func addLocalDeviceMemif(vppCh vppinfra.ConnectionData,
 	} else if conf.HostConf.MemifConf.Mode == "inject-punt" {
 		memifMode = vppmemif.ModePuntInject
 	} else {
-		return fmt.Errorf("ERROR: Invalid MEMIF Mode:" + conf.HostConf.MemifConf.Mode)
+		return fmt.Errorf("ERROR: Invalid MEMIF Mode: %s", conf.HostConf.MemifConf.Mode)
 	}
 
 	// Create Memif Socket
@@ -301,7 +404,19 @@ func addLocalDeviceMemif(vppCh vppinfra.ConnectionData,
 	}
 
 	// Create MemIf Interface
-	data.InterfaceSwIfIndex, err = vppmemif.CreateMemifInterface(vppCh.Ch, data.MemifSocketId, memif.MemifRole(memifRole), memif.MemifMode(memifMode))
+	data.InterfaceSwIfIndex, err = vppmemif.CreateMemifInterface(vppCh.Ch, vppmemif.CreateParams{
+		SocketID:   data.MemifSocketId,
+		Role:       memif.MemifRole(memifRole),
+		Mode:       memif.MemifMode(memifMode),
+		RxQueues:   conf.HostConf.MemifConf.RxQueues,
+		TxQueues:   conf.HostConf.MemifConf.TxQueues,
+		RingSize:   conf.HostConf.MemifConf.RingSize,
+		BufferSize: conf.HostConf.MemifConf.BufferSize,
+		Secret:     conf.HostConf.MemifConf.Secret,
+		NoZeroCopy: conf.HostConf.MemifConf.NoZeroCopy,
+		UseDma:     conf.HostConf.MemifConf.UseDma,
+		HwAddr:     conf.HostConf.MAC,
+	})
 	if err != nil {
 		logging.Debugf("addLocalDeviceMemif(vpp): Error creating memif inteface: %v", err)
 		return

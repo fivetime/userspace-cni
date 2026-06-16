@@ -16,15 +16,13 @@
 // govpp API on real-world use-cases.
 package vppvhostuser
 
-// Generates Go bindings for all VPP APIs located in the json directory.
-//go:generate go run go.fd.io/govpp/cmd/binapi-generator --output-dir=../../bin_api
-
 import (
 	"fmt"
 
-	"github.com/intel/userspace-cni-network-plugin/cnivpp/bin_api/interface_types"
-	"github.com/intel/userspace-cni-network-plugin/cnivpp/bin_api/vhost_user"
 	"go.fd.io/govpp/api"
+	"go.fd.io/govpp/binapi/ethernet_types"
+	"go.fd.io/govpp/binapi/interface_types"
+	"go.fd.io/govpp/binapi/vhost_user"
 )
 
 //
@@ -44,26 +42,41 @@ const (
 // API Functions
 //
 
-// Attempt to create a Vhost-User Interface.
-// Input:
-//
-//	ch api.Channel
-//	mode VhostUserMode - ModeClient or ModeServer
-//	socketFile string - Directory and Filename of socket file
-func CreateVhostUserInterface(ch api.Channel, mode bool, socketFile string) (swIfIndex interface_types.InterfaceIndex, err error) {
+// CreateParams holds the inputs for CreateVhostUserInterface.
+type CreateParams struct {
+	IsServer       bool   // true: VPP listens (server); false: VPP connects (client)
+	SockFilename   string // directory and filename of the socket file
+	EnableGso      bool
+	EnablePacked   bool
+	EnableEventIdx bool
+	MAC            string // optional fixed MAC (aa:bb:cc:dd:ee:ff); "" -> VPP picks one
+}
+
+// Attempt to create a Vhost-User Interface via create_vhost_user_if_v2
+// (create_vhost_user_if is deprecated).
+func CreateVhostUserInterface(ch api.Channel, p CreateParams) (swIfIndex interface_types.InterfaceIndex, err error) {
 
 	// Populate the Add Structure
-	req := &vhost_user.CreateVhostUserIf{
-		IsServer:          mode,
-		SockFilename:      socketFile,
+	req := &vhost_user.CreateVhostUserIfV2{
+		IsServer:          p.IsServer,
+		SockFilename:      p.SockFilename,
 		Renumber:          false,
+		EnableGso:         p.EnableGso,
+		EnablePacked:      p.EnablePacked,
+		EnableEventIdx:    p.EnableEventIdx,
 		CustomDevInstance: 0,
-		UseCustomMac:      false,
-		//MacAddress: "",
 		//Tag: "",
 	}
+	if p.MAC != "" {
+		hw, perr := ethernet_types.ParseMacAddress(p.MAC)
+		if perr != nil {
+			return 0, fmt.Errorf("vhostuser: invalid MAC %q: %w", p.MAC, perr)
+		}
+		req.UseCustomMac = true
+		req.MacAddress = hw
+	}
 
-	reply := &vhost_user.CreateVhostUserIfReply{}
+	reply := &vhost_user.CreateVhostUserIfV2Reply{}
 
 	err = ch.SendRequest(req).ReceiveReply(reply)
 

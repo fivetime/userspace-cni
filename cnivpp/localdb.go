@@ -33,10 +33,10 @@ import (
 
 	"github.com/containernetworking/cni/pkg/skel"
 
-	"github.com/intel/userspace-cni-network-plugin/cnivpp/bin_api/interface_types"
 	"github.com/intel/userspace-cni-network-plugin/pkg/annotations"
 	"github.com/intel/userspace-cni-network-plugin/pkg/configdata"
 	"github.com/intel/userspace-cni-network-plugin/pkg/types"
+	"go.fd.io/govpp/binapi/interface_types"
 )
 
 // Constants

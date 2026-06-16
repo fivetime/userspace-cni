@@ -16,11 +16,9 @@
 // govpp API on real-world use-cases.
 package vppinfra
 
-// Generates Go bindings for all VPP APIs located in the json directory.
-//go:generate go run go.fd.io/govpp/cmd/binapi-generator --output-dir=../../bin_api
-
 import (
 	"fmt"
+	"time"
 
 	"github.com/sirupsen/logrus"
 
@@ -31,6 +29,12 @@ import (
 
 // Constants
 const debugInfra = false
+
+// replyTimeout bounds how long a single request waits for a reply from VPP.
+// Without it a hung or unresponsive vpp would block the whole (short-lived)
+// CNI invocation indefinitely. govpp's per-channel timeout is the idiomatic
+// knob for this — no need to wrap every call in our own context.
+const replyTimeout = 5 * time.Second
 
 // Types
 type ConnectionData struct {
@@ -73,6 +77,7 @@ func VppOpenCh() (ConnectionData, error) {
 		}
 		return vppCh, err
 	}
+	vppCh.Ch.SetReplyTimeout(replyTimeout)
 	vppCh.closeFlag = true
 
 	return vppCh, err

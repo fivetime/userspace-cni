@@ -16,9 +16,6 @@
 // govpp API on real-world use-cases.
 package main
 
-// Generates Go bindings for all VPP APIs located in the json directory.
-//go:generate go run go.fd.io/govpp/cmd/binapi-generator --output-dir=../../bin_api
-
 import (
 	"fmt"
 	_ "net"
@@ -32,7 +29,7 @@ import (
 	vppbridge "github.com/intel/userspace-cni-network-plugin/cnivpp/api/bridge"
 	vppinfra "github.com/intel/userspace-cni-network-plugin/cnivpp/api/infra"
 	vppvhostuser "github.com/intel/userspace-cni-network-plugin/cnivpp/api/vhostuser"
-	"github.com/intel/userspace-cni-network-plugin/cnivpp/bin_api/interface_types"
+	"go.fd.io/govpp/binapi/interface_types"
 )
 
 // Constants
@@ -73,7 +70,7 @@ func main() {
 	defer vppinfra.VppCloseCh(vppCh)
 
 	// Create Vhost-User Interface
-	swIfIndex, err = vppvhostuser.CreateVhostUserInterface(vppCh.Ch, vhostUserMode, vhostUserSocketFile)
+	swIfIndex, err = vppvhostuser.CreateVhostUserInterface(vppCh.Ch, vppvhostuser.CreateParams{IsServer: vhostUserMode, SockFilename: vhostUserSocketFile})
 	if err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)

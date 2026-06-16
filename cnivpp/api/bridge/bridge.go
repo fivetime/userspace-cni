@@ -16,16 +16,13 @@
 // govpp API on real-world use-cases.
 package vppbridge
 
-// Generates Go bindings for all VPP APIs located in the json directory.
-//go:generate go run go.fd.io/govpp/cmd/binapi-generator --output-dir=../../bin_api
-
 import (
 	"fmt"
 
-	"github.com/intel/userspace-cni-network-plugin/cnivpp/bin_api/interface_types"
-	"github.com/intel/userspace-cni-network-plugin/cnivpp/bin_api/l2"
 	. "github.com/intel/userspace-cni-network-plugin/pkg/types"
 	"go.fd.io/govpp/api"
+	"go.fd.io/govpp/binapi/interface_types"
+	"go.fd.io/govpp/binapi/l2"
 )
 
 // Constants
@@ -46,8 +43,8 @@ func CreateBridge(ch api.Channel, bridgeDomain uint32) error {
 		return nil
 	}
 
-	// Populate the Request Structure
-	req := &l2.BridgeDomainAddDel{
+	// Populate the Request Structure (bridge_domain_add_del is deprecated)
+	req := &l2.BridgeDomainAddDelV2{
 		BdID:    bridgeDomain,
 		Flood:   true,
 		UuFlood: true,
@@ -55,11 +52,11 @@ func CreateBridge(ch api.Channel, bridgeDomain uint32) error {
 		Learn:   true,
 		ArpTerm: false,
 		MacAge:  0,
-		//BdTag   []byte `struc:"[64]byte"`
+		//BdTag   string
 		IsAdd: true,
 	}
 
-	reply := &l2.BridgeDomainAddDelReply{}
+	reply := &l2.BridgeDomainAddDelV2Reply{}
 
 	err := ch.SendRequest(req).ReceiveReply(reply)
 
@@ -82,13 +79,13 @@ func DeleteBridge(ch api.Channel, bridgeDomain uint32) error {
 		return nil
 	}
 
-	// Populate the Request Structure
-	req := &l2.BridgeDomainAddDel{
+	// Populate the Request Structure (bridge_domain_add_del is deprecated)
+	req := &l2.BridgeDomainAddDelV2{
 		BdID:  bridgeDomain,
 		IsAdd: false,
 	}
 
-	reply := &l2.BridgeDomainAddDelReply{}
+	reply := &l2.BridgeDomainAddDelV2Reply{}
 
 	err := ch.SendRequest(req).ReceiveReply(reply)
 

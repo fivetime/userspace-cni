@@ -561,7 +561,7 @@ func TestGetFileAnnotation(t *testing.T) {
 			if tc.defaultFile {
 				// modify expected error in case that default file exists
 				if _, err = os.Stat("/etc/podinfo/annotations"); err == nil {
-					tc.expErr = fmt.Errorf(fmt.Sprintf(`ERROR: "%v" missing from pod annotation`, tc.annotIndex))
+					tc.expErr = fmt.Errorf(`ERROR: "%v" missing from pod annotation`, tc.annotIndex)
 				}
 				result, err = getFileAnnotation(tc.annotIndex, "")
 			} else {

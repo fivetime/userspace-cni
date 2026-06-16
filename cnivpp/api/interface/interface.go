@@ -16,17 +16,14 @@
 // govpp API on real-world use-cases.
 package vppinterface
 
-// Generates Go bindings for all VPP APIs located in the json directory.
-//go:generate go run go.fd.io/govpp/cmd/binapi-generator --output-dir=../../bin_api
-
 import (
 	"fmt"
 
 	current "github.com/containernetworking/cni/pkg/types/100"
-	interfaces "github.com/intel/userspace-cni-network-plugin/cnivpp/bin_api/interface"
-	"github.com/intel/userspace-cni-network-plugin/cnivpp/bin_api/interface_types"
-	"github.com/intel/userspace-cni-network-plugin/cnivpp/bin_api/ip_types"
 	"go.fd.io/govpp/api"
+	interfaces "go.fd.io/govpp/binapi/interface"
+	"go.fd.io/govpp/binapi/interface_types"
+	"go.fd.io/govpp/binapi/ip_types"
 )
 
 // Constants
@@ -59,6 +56,33 @@ func SetState(ch api.Channel, swIfIndex interface_types.InterfaceIndex, isUp int
 	return nil
 }
 
+// SetMtu sets the interface's L3 MTU. An mtu of 0 is a no-op (leave default).
+func SetMtu(ch api.Channel, swIfIndex interface_types.InterfaceIndex, mtu uint32) error {
+	if mtu == 0 {
+		return nil
+	}
+
+	// The mtu array is indexed by MtuProto {L3, IP4, IP6, MPLS}. Set the L3
+	// (overall interface) MTU and leave the per-protocol entries at 0 so VPP
+	// keeps their defaults.
+	req := &interfaces.SwInterfaceSetMtu{
+		SwIfIndex: swIfIndex,
+		Mtu:       []uint32{mtu, 0, 0, 0},
+	}
+
+	reply := &interfaces.SwInterfaceSetMtuReply{}
+
+	err := ch.SendRequest(req).ReceiveReply(reply)
+	if err != nil {
+		if debugInterface {
+			fmt.Println("Error:", err)
+		}
+		return err
+	}
+
+	return nil
+}
+
 func AddDelIpAddress(ch api.Channel, swIfIndex interface_types.InterfaceIndex, isAdd bool, ipResult *current.Result) error {
 
 	// Populate the Add Structure
@@ -71,10 +95,10 @@ func AddDelIpAddress(ch api.Channel, swIfIndex interface_types.InterfaceIndex, i
 		var addressWithPrefix ip_types.AddressWithPrefix
 
 		if prefix, _ := ip.Address.Mask.Size(); prefix == 4 {
-			addressWithPrefix = ip_types.AddressWithPrefix{Address: ip_types.AddressFromIP(ip.Address.IP.To4()), Len: 4}
+			addressWithPrefix = ip_types.AddressWithPrefix{Address: ip_types.NewAddress(ip.Address.IP.To4()), Len: 4}
 
 		} else if prefix, _ := ip.Address.Mask.Size(); prefix == 16 {
-			addressWithPrefix = ip_types.AddressWithPrefix{Address: ip_types.AddressFromIP(ip.Address.IP.To16()), Len: 16}
+			addressWithPrefix = ip_types.AddressWithPrefix{Address: ip_types.NewAddress(ip.Address.IP.To16()), Len: 16}
 		} else {
 			break
 		}
