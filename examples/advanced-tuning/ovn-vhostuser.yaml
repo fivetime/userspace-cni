@@ -1,0 +1,79 @@
+---
+# OVS-DPDK vhostuser bound to a pre-existing Neutron/OVN logical port.
+#
+# The NetworkAttachmentDefinition is minimal: engine ovs-dpdk + vhostuser, no
+# bridgeName. When the pod supplies an OvnPort (see the pod below), the CNI
+# defaults the bridge to br-int and stamps external_ids:iface-id=<OvnPort> on
+# the dpdkvhostuser port, so ovn-controller claims the logical port and programs
+# the datapath. The Neutron-assigned MAC/IP are delivered to the in-pod DPDK app
+# via the CNI config data — the app MUST use that MAC or OVN drops the traffic.
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: ovn-tenant
+  namespace: ovn
+spec:
+  config: '{
+        "cniVersion": "1.0.0",
+        "type": "userspace",
+        "name": "ovn-tenant",
+        "kubeconfig": "/etc/cni/net.d/multus.d/multus.kubeconfig",
+        "logFile": "/var/log/ovn-tenant-cni.log",
+        "logLevel": "debug",
+        "host": {
+                "engine": "ovs-dpdk",
+                "iftype": "vhostuser",
+                "netType": "bridge",
+                "vhost": {
+                        "mode": "client"
+                }
+        },
+        "container": {
+                "engine": "ovs-dpdk",
+                "iftype": "vhostuser",
+                "netType": "interface",
+                "vhost": {
+                        "mode": "server"
+                }
+        }
+    }'
+---
+# Pod referencing the OVN logical port via cni-args. multus-cni propagates the
+# mac/ips/cni-args to the userspace CNI; the OvnPort is the Neutron logical
+# port UUID. (This mirrors the kernel-mode ovs-cni OvnPort usage.)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ovn-dpdk-app
+  namespace: ovn
+  annotations:
+    k8s.v1.cni.cncf.io/networks: |
+      [{
+        "name": "ovn-tenant",
+        "namespace": "ovn",
+        "mac": "fa:16:3e:11:22:33",
+        "ips": ["192.168.1.8/24"],
+        "cni-args": {"OvnPort": "<neutron-logical-port-uuid>"}
+      }]
+spec:
+  containers:
+    - name: dpdk-app
+      image: <your-dpdk-app-image>
+      # The app connects to the vhostuser socket exposed in the shared dir and
+      # MUST source traffic with mac fa:16:3e:11:22:33 / ip 192.168.1.8.
+      resources:
+        limits:
+          hugepages-1Gi: 2Gi
+          memory: 2Gi
+      volumeMounts:
+        - name: shared-dir
+          mountPath: /var/lib/cni/usrspcni/
+        - name: hugepage
+          mountPath: /dev/hugepages
+  volumes:
+    - name: shared-dir
+      hostPath:
+        path: /var/lib/cni/usrspcni/
+    - name: hugepage
+      emptyDir:
+        medium: HugePages

@@ -1,0 +1,4 @@
+# This is a Linux project — normalize all text files to LF in the repo.
+# Prevents CRLF churn from Windows checkouts (core.autocrlf). Binary files are
+# auto-detected by text=auto and left untouched.
+* text=auto eol=lf

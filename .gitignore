@@ -8,3 +8,6 @@ docker/vpp-centos-userspace-cni/usrsp-app
 docker/ovs-centos-userspace-cni/usrsp-app
 docker/unit-tests/Dockerfile.*
 !docker/unit-tests/Dockerfile.*.in
+
+# IDE
+.idea/

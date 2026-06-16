@@ -1,0 +1,50 @@
+---
+# VPP vhost-user interface (in addition to memif).
+#
+# On the host, "mode": "server" makes VPP create and listen on the socket in
+# the sharedDir; the in-pod app connects as the client. enableGso/enablePacked/
+# enableEventIdx are optional virtio tuning flags passed to VPP.
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: userspace-vpp-vhostuser
+  namespace: vpp
+spec:
+  config: '{
+        "cniVersion": "1.0.0",
+        "type": "userspace",
+        "name": "userspace-vpp-vhostuser",
+        "kubeconfig": "/etc/cni/net.d/multus.d/multus.kubeconfig",
+        "logFile": "/var/log/userspace-vpp-vhostuser-cni.log",
+        "logLevel": "debug",
+        "host": {
+                "engine": "vpp",
+                "iftype": "vhostuser",
+                "netType": "bridge",
+                "mtu": 1500,
+                "vhost": {
+                        "mode": "server",
+                        "enableGso": true,
+                        "enablePacked": false,
+                        "enableEventIdx": false
+                },
+                "bridge": {
+                        "bridgeName": "5"
+                }
+        },
+        "container": {
+                "engine": "vpp",
+                "iftype": "vhostuser",
+                "netType": "interface",
+                "vhost": {
+                        "mode": "client"
+                }
+        },
+        "ipam": {
+                "type": "host-local",
+                "subnet": "10.56.218.0/24",
+                "rangeStart": "10.56.218.131",
+                "rangeEnd": "10.56.218.190",
+                "gateway": "10.56.218.1"
+        }
+    }'

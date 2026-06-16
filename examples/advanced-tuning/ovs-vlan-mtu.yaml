@@ -1,0 +1,50 @@
+---
+# OVS-DPDK vhostuser with an access VLAN tag and jumbo MTU.
+#
+# "vlanId" sets the OVS Port "tag" (an access port on that VLAN), so traffic on
+# this attachment is isolated to VLAN 100. "mtu" sets the OVS Interface
+# mtu_request. Both are optional; omit to use defaults (untagged / port default
+# MTU).
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: userspace-ovs-vlan-mtu
+  namespace: ovs
+spec:
+  config: '{
+        "cniVersion": "1.0.0",
+        "type": "userspace",
+        "name": "userspace-ovs-vlan-mtu",
+        "kubeconfig": "/etc/cni/net.d/multus.d/multus.kubeconfig",
+        "logFile": "/var/log/userspace-ovs-vlan-mtu-cni.log",
+        "logLevel": "debug",
+        "host": {
+                "engine": "ovs-dpdk",
+                "iftype": "vhostuser",
+                "netType": "bridge",
+                "mtu": 9000,
+                "vhost": {
+                        "mode": "client"
+                },
+                "bridge": {
+                        "bridgeName": "br-4",
+                        "vlanId": 100
+                }
+        },
+        "container": {
+                "engine": "ovs-dpdk",
+                "iftype": "vhostuser",
+                "netType": "interface",
+                "mtu": 9000,
+                "vhost": {
+                        "mode": "server"
+                }
+        },
+        "ipam": {
+                "type": "host-local",
+                "subnet": "10.56.217.0/24",
+                "rangeStart": "10.56.217.131",
+                "rangeEnd": "10.56.217.190",
+                "gateway": "10.56.217.1"
+        }
+    }'

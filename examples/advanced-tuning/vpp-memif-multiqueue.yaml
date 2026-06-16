@@ -1,0 +1,64 @@
+---
+# VPP memif with multi-queue and tuning knobs + jumbo MTU.
+#
+# rxQueues/txQueues must match on both ends (master and slave), so the same
+# values are set in "host" and "container". ringSize must be a power of 2.
+# All tuning fields are optional; omit them to use VPP defaults
+# (rxQueues/txQueues=1, ringSize=1024, bufferSize=2048).
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: userspace-vpp-memif-mq
+  namespace: vpp
+spec:
+  config: '{
+        "cniVersion": "1.0.0",
+        "type": "userspace",
+        "name": "userspace-vpp-memif-mq",
+        "kubeconfig": "/etc/cni/net.d/multus.d/multus.kubeconfig",
+        "logFile": "/var/log/userspace-vpp-memif-mq-cni.log",
+        "logLevel": "debug",
+        "host": {
+                "engine": "vpp",
+                "iftype": "memif",
+                "netType": "bridge",
+                "mtu": 9000,
+                "memif": {
+                        "role": "master",
+                        "mode": "ethernet",
+                        "rxQueues": 4,
+                        "txQueues": 4,
+                        "ringSize": 2048,
+                        "bufferSize": 2048,
+                        "noZeroCopy": false,
+                        "useDma": false
+                },
+                "bridge": {
+                        "bridgeName": "4"
+                }
+        },
+        "container": {
+                "engine": "vpp",
+                "iftype": "memif",
+                "netType": "interface",
+                "mtu": 9000,
+                "memif": {
+                        "role": "slave",
+                        "mode": "ethernet",
+                        "rxQueues": 4,
+                        "txQueues": 4
+                }
+        },
+        "ipam": {
+                "type": "host-local",
+                "subnet": "10.56.217.0/24",
+                "rangeStart": "10.56.217.131",
+                "rangeEnd": "10.56.217.190",
+                "routes": [
+                        {
+                                "dst": "0.0.0.0/0"
+                        }
+                ],
+                "gateway": "10.56.217.1"
+        }
+    }'
