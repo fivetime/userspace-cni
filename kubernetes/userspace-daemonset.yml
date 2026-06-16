@@ -13,9 +13,14 @@ spec:
       labels:
         app: userspace-cni
     spec:
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
       containers:
       - name: userspace-cni-plugin
-        image: localhost:5000/userspacecni #registory:imagename
+        # Alpine-built image; the binary lives at /userspace inside the image
+        # (legacy ligato image had it at /root/userspace-cni-network-plugin/userspace/userspace).
+        image: ghcr.io/fivetime/userspace-cni:main
         imagePullPolicy: IfNotPresent
         securityContext:
            allowPrivilegeEscalation: false
@@ -30,8 +35,17 @@ spec:
         volumeMounts:
         - name: cnibin
           mountPath: /opt/cni/bin
-        command: ["/bin/sh","-c"]
-        args: ["cp -rf /root/userspace-cni-network-plugin/userspace/userspace /opt/cni/bin; sleep inf"]
+        # Copy the binary onto the host's CNI bin dir, then idle so the Pod
+        # stays Running. The CNI is invoked per-Pod by the node runtime, not by
+        # this container — it only delivers the binary. We idle (rather than let
+        # the container exit) so the DaemonSet doesn't churn through restarts and
+        # show a misleading CrashLoopBackOff.
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          cp -f /userspace /opt/cni/bin/userspace
+          echo "userspace-cni installed to /opt/cni/bin/userspace"
+          while true; do sleep 3600; done
       volumes:
         - name: cnibin
           hostPath:

@@ -102,39 +102,75 @@ for more information.
 ![Vhostuser plugin](doc/images/userspace-plugin.png)
 
 
+# Fork notes (fivetime/userspace-cni)
+
+This fork modernizes the upstream `intel/userspace-cni-network-plugin` for
+deployment alongside an EVPN PE (BIRD + VPP) workload on OVS-DPDK nodes:
+
+- **Go 1.25**, dependencies refreshed (`containernetworking/cni` v1.3,
+  `containernetworking/plugins` v1.9, `k8s.io/*` v0.34, `go.fd.io/govpp`
+  v0.13).
+- **`cniovs` rewritten on top of libovsdb** — no more `exec ovs-vsctl`
+  + text parsing. The plugin talks the OVSDB protocol directly to the
+  local `ovsdb-server` unix socket.
+- **`cnivpp` uses `go.fd.io/govpp/binapi/*` directly** — govpp ships
+  pre-generated binapi packages, so the build no longer needs `make
+  generate`, a VPP toolchain, or a `ligato/vpp-base` builder image.
+- **Alpine image** (~25 MB) at `ghcr.io/fivetime/userspace-cni:main`
+  replacing the upstream ~500 MB ligato-based image. Tags: `:main` (HEAD
+  of `main`) and `:<8-char-sha>` (per commit).
+- **CI workflow** `build-from-main` runs on every push to `main` and
+  publishes the multi-arch image (linux/amd64 + linux/arm64) to GHCR.
+  See [docker/README.md](docker/README.md).
+
+> **Upstream status:** `intel/userspace-cni-network-plugin` has been
+> archived. This fork has diverged and follows its own roadmap; there is
+> no automated upstream sync or release-tag mirroring.
+
+The CNI's job is creating the memif / vhostuser socket file in the
+sharedDir. **What the in-pod process does with the socket — DPDK
+libmemif, VPP host stack, EVPN PE software, etc. — is a business-side
+concern explicitly outside the CNI's scope.**
+
 # Build & Clean
 
-This plugin is recommended to be built with Go 1.22.3 and either OVS-DPDK 2.9.0-3
-or VPP 23.02. Other versions of Go, OVS-DPDK and VPP are theoretically
-supported, but MIGHT cause unknown issue.
+This plugin builds with Go 1.25 against either OVS-DPDK 3.x or VPP
+25.10. The VPP version is pinned by the pregenerated binapi shipped in
+`go.fd.io/govpp` v0.13 (VPP 25.10-release); other versions may work but
+are not tested. See [Installing VPP](#installing-vpp) for the version
+caveat.
 
-The Userspace CNI requires several files from VPP in-order to build.
-For this reason we build userspacecni in a container.
+The Alpine image is built directly from this repo's `docker/Dockerfile`
+(no VPP toolchain or `make generate` step needed):
 
-userspacecni is built in a container and then transferred to the host.
-By default Docker is used to build the image
-
-Before building be sure to modify the makefile variable `IMAGE_REGISTRY`.
-`IMAGE_REGISTRY` should be set to an image registry thats accessible across your cluster.
-
-To build the docker image:
-```
-  git clone https://github.com/intel/userspace-cni-network-plugin.git
-  cd userspace-cni-network-plugin
-  make build
+```bash
+git clone https://github.com/fivetime/userspace-cni.git
+cd userspace-cni
+docker build -f docker/Dockerfile -t userspace-cni:dev .
 ```
 
-To copy the userspacecni binary to the host directory `/opt/cni/bin/`
+For multi-arch (matches what CI does):
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -f docker/Dockerfile \
+  -t ghcr.io/fivetime/userspace-cni:dev \
+  --push .
 ```
-  make copy
+
+To deploy across the cluster, apply the DaemonSet:
+```bash
+kubectl apply -f kubernetes/userspace-daemonset.yml
 ```
-To push the image to the docker reg defined in the makefile
-```
-  make push
-```
-To deploy the userspacecni across the cluster
-```
-  make deploy
+
+The DaemonSet's container runs `cp -f /userspace
+/opt/cni/bin/userspace` and exits; the binary now lives on the host at
+`/opt/cni/bin/userspace` and is invoked per-Pod by the node runtime.
+
+For a local non-container build (no Docker):
+```bash
+CGO_ENABLED=0 go build -o /opt/cni/bin/userspace ./userspace
 ```
 
 # Network Configuration Reference
@@ -149,6 +185,73 @@ userspace interface configuration data as well as container network data
 userspace interface should be injected into. Defaults used when data omitted.
 * `ipam` (dictionary, optional): IPAM configuration to be used for this network.
 
+### `host` / `container` fields
+
+Both the `host` and `container` dictionaries accept the same fields. The
+`container` values default to the `host` values when omitted.
+
+* `engine` (string): `vpp` or `ovs-dpdk`.
+* `iftype` (string): `memif` (VPP) or `vhostuser` (VPP or ovs-dpdk).
+* `netType` (string): `bridge`, `interface`, or `none`.
+* `mtu` (int, optional): Interface MTU. ovs-dpdk sets the OVS `mtu_request`
+  column; VPP sets the L3 MTU. `0` (default) leaves the engine default.
+* `mac` (string, optional): Fixed MAC. VPP sets it on the interface; ovs-dpdk
+  delivers it to the in-pod app via config data (the OVS schema only honors a
+  port `mac` for internal ports, not dpdkvhostuser). For ovs-dpdk an annotation
+  MAC (e.g. via OvnPort) takes precedence. Empty = random / VPP-chosen.
+
+`memif` block (VPP only — ignored by ovs-dpdk):
+
+* `role` (string): `master` or `slave`.
+* `mode` (string): `ethernet` (default), `ip`, or `inject-punt`.
+* `rxQueues` / `txQueues` (uint8, optional): number of rx/tx queues for
+  multi-queue. Default `1`. Must be identical on both ends (master and slave).
+* `ringSize` (uint32, optional): descriptors per ring. Default `1024`. Must be a
+  power of 2.
+* `bufferSize` (uint16, optional): packet buffer size in bytes. Default `2048`.
+* `secret` (string, optional): shared secret, max 24 chars.
+* `noZeroCopy` (bool, optional): disable zero-copy mode. Default `false`.
+* `useDma` (bool, optional): enable DMA acceleration. Default `false`.
+* `socketfile` (string, optional): socket filename (auto-generated if omitted).
+
+`vhost` block:
+
+* `mode` (string): `client` or `server`. ovs-dpdk and VPP both honor this; VPP
+  `server` makes VPP create/listen on the socket, `client` connects to a
+  peer-created one.
+* `group` (string, optional): socket file group ownership (ovs-dpdk).
+* `group` (string, optional): socket file group ownership. ovs-dpdk applies it
+  to the shared dir; VPP applies it to the socket in server mode only.
+* `enableGso` / `enablePacked` / `enableEventIdx` (bool, optional): VPP-only
+  virtio tuning flags. Default `false`. Ignored by ovs-dpdk.
+* `ingressPolicingRate` / `ingressPolicingBurst` (int, optional): ovs-dpdk-only
+  per-port ingress rate limit (kbps / kb). `0` = no limit. Ignored by VPP.
+* `socketfile` (string, optional): socket filename (auto-generated if omitted).
+
+`bridge` block:
+
+* `bridgeName` (string): bridge name. For VPP this is the numeric bridge-domain
+  id as a string; for ovs-dpdk it is the OVS bridge name.
+* `vlanId` (int, optional): ovs-dpdk only. Sets the OVS Port `tag` — access
+  VLAN, or native VLAN when combined with `trunks`. `0` (default) = untagged.
+* `trunks` ([]int, optional): ovs-dpdk only. Allowed VLAN ids for a trunk port.
+* `vlanMode` (string, optional): ovs-dpdk only. Explicit OVS `vlan_mode`
+  (access / trunk / native-tagged / native-untagged / dot1q-tunnel). Empty =
+  inferred from `vlanId` / `trunks`.
+
+### OVN integration (`OvnPort` cni-arg, ovs-dpdk)
+
+A pod can bind its vhostuser port to a pre-existing Neutron/OVN logical port by
+passing the logical port UUID via the pod network annotation's `cni-args`
+(`{"OvnPort":"<uuid>"}`) — the same mechanism kernel-mode `ovs-cni` uses. When
+present, the CNI defaults the bridge to `br-int`, stamps
+`external_ids:iface-id=<OvnPort>` on the interface so `ovn-controller` programs
+the datapath, and uses the annotation MAC. See
+[examples/advanced-tuning/ovn-vhostuser.yaml](examples/advanced-tuning/ovn-vhostuser.yaml).
+
+See [examples/advanced-tuning](examples/advanced-tuning) for ready-to-use
+NetworkAttachmentDefinitions that exercise these fields.
+
 
 ## Work Standalone
 
@@ -156,7 +259,7 @@ Given the following network configuration:
 ```
 sudo cat > /etc/cni/net.d/90-userspace.conf <<EOF
 {
-	"cniVersion": "0.3.1",
+	"cniVersion": "1.0.0",
         "type": "userspace",
         "name": "memif-network",
         "host": {
@@ -232,7 +335,7 @@ details refer the link:
 		}
 	},
 	{
-		"cniVersion": "0.3.1",
+		"cniVersion": "1.0.0",
 		"type": "userspace",
 		"name": "memif-network",
 		"host": {
@@ -332,10 +435,13 @@ CNI configuration. For example:
 
 
 # OVS CNI Library Intro
-OVS CNI Library is written in GO and used by UserSpace CNI to interface with the
-OVS. OVS currently does not have a GO-API, though there are some external
-packages that are being explored. When the CNI is invoked, OVS CNI library
-builds up an OVS CLI command (ovs-vsctl) and executes the request.
+OVS CNI Library is written in Go and used by UserSpace CNI to interface with
+OVS. This fork talks to the local `ovsdb-server` directly over its unix
+socket using [libovsdb](https://github.com/ovn-org/libovsdb) — no `ovs-vsctl`
+exec, no text parsing, no PATH lookups. The library handles bridge creation
+(`datapath_type=netdev` for OVS-DPDK), port creation
+(`dpdkvhostuser` / `dpdkvhostuserclient` with `options:vhost-server-path`),
+deletion, and queries.
 
 ## Installing OVS
 To install the DPDK-OVS, the source codes contains a
@@ -377,9 +483,13 @@ files must be in */usr/share/vpp/api/*).
 
 
 ## Installing VPP
-There are several ways to install VPP. This code is based on a fixed release
-VPP (VPP 23.02), so it is best to install a released version (even
-though it is possible to build your own).
+There are several ways to install VPP. This code targets **VPP 25.10**
+via the pregenerated binapi bindings shipped in `go.fd.io/govpp` v0.13
+(generated for VPP 25.10-release). govpp validates message CRCs at
+runtime, so a mismatched VPP build can fail at connect/transact time. To
+target a different VPP release, regenerate the bindings with
+`binapi-generator` against that VPP's `/usr/share/vpp/api` instead of
+relying on the shipped `go.fd.io/govpp/binapi/*` packages.
 
 
 ### Prerequisites
@@ -401,10 +511,10 @@ hugepages to 512, use:
 containers, work still needs to be done. Set SELinux to permissive.
 
 ### VPP install guide
-https://s3-docs.fd.io/vpp/23.02/gettingstarted/installing/
+https://s3-docs.fd.io/vpp/24.10/gettingstarted/installing/
 
 ### VPP source code
-https://github.com/FDio/vpp/tree/v23.02
+https://github.com/FDio/vpp/tree/v24.10
 
 ### OVS install guide
 https://docs.openvswitch.org/en/latest/intro/install/

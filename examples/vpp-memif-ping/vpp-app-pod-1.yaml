@@ -15,7 +15,7 @@ spec:
   hostname: vpp-app1
   subdomain: vpp
   containers:
-  - image: ligato/vpp-base:23.02 #imagename
+  - image: ligato/vpp-base:24.10 #imagename
     imagePullPolicy: IfNotPresent
     name: vpp-app1
     volumeMounts:

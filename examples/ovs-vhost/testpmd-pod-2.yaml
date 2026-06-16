@@ -17,7 +17,7 @@ spec:
   containers:
   - image: localhost:5000/testpmd #replace this with your docker reg and image name
     imagePullPolicy: IfNotPresent
-    name: ovs-app1
+    name: ovs-app2
     volumeMounts:
     - name: podinfo
       mountPath: /etc/podinfo
