@@ -1,0 +1,126 @@
+# Minimal NetworkAttachmentDefinition + Pod for userspace-cni built from
+# docker/Dockerfile. The CNI creates a memif socket file in the sharedDir;
+# what the in-pod process does with it (libmemif, VPP host stack, etc.) is
+# the consumer's concern and intentionally not modelled here.
+#
+# Canonical upstream examples (testpmd, vpp-memif-ping) live under
+# examples/. They work unchanged against the fork image — just substitute
+# the image reference.
+---
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: vpp-memif
+  namespace: default
+spec:
+  config: |
+    {
+      "cniVersion": "1.0.0",
+      "type": "userspace",
+      "name": "vpp-memif",
+      "sharedDir": "/run/openvswitch/",
+      "host": {
+        "engine": "vpp",
+        "iftype": "memif",
+        "netType": "interface",
+        "memif": {
+          "role": "master",
+          "mode": "ethernet"
+        }
+      },
+      "container": {
+        "engine": "vpp",
+        "iftype": "memif",
+        "netType": "interface",
+        "memif": {
+          "role": "slave",
+          "mode": "ethernet"
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dpdk-consumer
+  annotations:
+    # Pulls a memif socket via userspace-cni.
+    k8s.v1.cni.cncf.io/networks: vpp-memif
+    # Tells the in-pod app where to find the socket (and the configData
+    # JSON the CNI writes alongside it).
+    userspace/mappedDir: /var/lib/cni/usrspcni/
+spec:
+  containers:
+    - name: app
+      image: ghcr.io/example/your-dpdk-app:latest    # whatever consumes libmemif
+      resources:
+        requests:
+          hugepages-2Mi: 1Gi
+          memory: 500Mi
+          cpu: "2"
+        limits:
+          hugepages-2Mi: 1Gi
+          memory: 500Mi
+          cpu: "2"
+      volumeMounts:
+        # The pod sees the memif socket and configData JSON here. Path must
+        # match `userspace/mappedDir`. Must point at the same host dir the
+        # CNI writes to (per NAD.sharedDir or KubeConfig-resolved dir).
+        - name: shared-dir
+          mountPath: /var/lib/cni/usrspcni/
+        - name: hugepage
+          mountPath: /hugepages
+        # downwardAPI gives the in-pod app a way to read annotations
+        # (mappedDir, configuration-data) without calling K8s API.
+        - name: podinfo
+          mountPath: /etc/podinfo
+  volumes:
+    - name: shared-dir
+      hostPath:
+        path: /run/openvswitch/
+    - name: hugepage
+      emptyDir:
+        medium: HugePages
+    - name: podinfo
+      downwardAPI:
+        items:
+          - path: annotations
+            fieldRef:
+              fieldPath: metadata.annotations
+          - path: labels
+            fieldRef:
+              fieldPath: metadata.labels
+---
+# The companion DaemonSet that installs /opt/cni/bin/userspace on every node:
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: userspace-cni-installer
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: userspace-cni
+  template:
+    metadata:
+      labels:
+        app: userspace-cni
+    spec:
+      hostNetwork: true
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: installer
+          image: ghcr.io/fivetime/userspace-cni:main
+          imagePullPolicy: IfNotPresent
+          # The image's CMD is `cp -f /userspace /opt/cni/bin/userspace`,
+          # so it copies and exits. K8s will restart it; this is the same
+          # pattern the upstream image uses.
+          volumeMounts:
+            - name: cnibin
+              mountPath: /opt/cni/bin
+      volumes:
+        - name: cnibin
+          hostPath:
+            path: /opt/cni/bin
