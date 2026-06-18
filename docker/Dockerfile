@@ -35,7 +35,8 @@ WORKDIR /workdir
 COPY . .
 
 RUN set -eux \
-    && go build -ldflags="-s -w -X main.version=${VERSION}" -o /workdir/bin/userspace ./userspace
+    && go build -ldflags="-s -w -X main.version=${VERSION}" -o /workdir/bin/userspace ./userspace \
+    && go build -ldflags="-s -w -X main.version=${VERSION}" -o /workdir/bin/userspace-daemon ./cmd/daemon
 
 ###############################################################################
 # Stage 2: runtime — minimal Alpine, single binary
@@ -60,5 +61,8 @@ LABEL org.opencontainers.image.title="userspace-cni" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 COPY --from=builder /workdir/bin/userspace /userspace
+# The restore daemon (per-node, re-asserts memif masters after a VPP restart).
+# Run as a DaemonSet container; it is a no-op image addition otherwise.
+COPY --from=builder /workdir/bin/userspace-daemon /userspace-daemon
 
 CMD ["cp", "-f", "/userspace", "/opt/cni/bin/userspace"]
