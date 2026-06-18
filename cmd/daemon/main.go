@@ -38,12 +38,19 @@ import (
 )
 
 func main() {
-	var apiSocket, socketPrefix string
+	var apiSocket, socketPrefix, logLevel string
 	flag.StringVar(&apiSocket, "vpp-api-socket", "",
 		"VPP binary API socket (empty = govpp default /run/vpp/api.sock)")
 	flag.StringVar(&socketPrefix, "socket-prefix", "",
 		"only manage memif masters whose socket is under this prefix (empty = all memifs)")
+	flag.StringVar(&logLevel, "log-level", "info",
+		"log level (verbose|debug|info|warning|error|panic)")
 	flag.Parse()
+
+	// Log to stderr at the requested level so `kubectl logs` surfaces the
+	// daemon's activity (the cni-log default is quiet / file-oriented).
+	logging.SetLogStderr(true)
+	logging.SetLogLevel(logLevel)
 
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
