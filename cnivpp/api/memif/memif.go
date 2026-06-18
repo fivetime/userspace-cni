@@ -467,8 +467,7 @@ func FindMemifBySocket(ch api.Channel, socketFilename string) (interface_types.I
 
 func findMemifSocket(ch api.Channel, socketFilename string) (found bool, socketId uint32) {
 
-	var count int
-	var usedList [20]uint32
+	var usedList []uint32
 	var done bool
 
 	// Populate the Message Structure
@@ -496,8 +495,7 @@ func findMemifSocket(ch api.Channel, socketFilename string) (found bool, socketI
 			socketId = reply.SocketID
 			break // break out of the loop
 		} else {
-			usedList[count] = reply.SocketID
-			count++
+			usedList = append(usedList, reply.SocketID)
 		}
 	}
 
@@ -511,7 +509,7 @@ func findMemifSocket(ch api.Channel, socketFilename string) (found bool, socketI
 		for !done {
 
 			done = true
-			for i := 0; i < count; i++ {
+			for i := 0; i < len(usedList); i++ {
 				if socketId == usedList[i] {
 					socketId++
 					done = false
