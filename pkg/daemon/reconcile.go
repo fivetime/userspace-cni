@@ -84,7 +84,12 @@ func Diff(desired, actual []Memif) (toCreate, toDelete []Memif) {
 // missing masters and delete the orphans. Idempotent — a no-op when VPP already
 // matches. Returns counts; stops at the first dataplane error (the next
 // reconcile retries, the operations being individually idempotent).
-func Reconcile(dp Dataplane, desired []Memif) (created, deleted int, err error) {
+//
+// gcOrphan, if non-nil, gates each orphan deletion: the orphan is deleted only
+// when gcOrphan(m) returns true. This confines GC to memifs CNI has truly
+// abandoned and avoids racing an in-flight CNI ADD (see SocketGone). nil deletes
+// every orphan.
+func Reconcile(dp Dataplane, desired []Memif, gcOrphan func(Memif) bool) (created, deleted int, err error) {
 	actual, err := dp.DumpMasters()
 	if err != nil {
 		return 0, 0, err
@@ -97,6 +102,9 @@ func Reconcile(dp Dataplane, desired []Memif) (created, deleted int, err error) 
 		created++
 	}
 	for _, m := range toDelete {
+		if gcOrphan != nil && !gcOrphan(m) {
+			continue // not confirmed abandoned (e.g. CNI ADD in flight) — keep it
+		}
 		if err = dp.DeleteMaster(m.SwIfIndex); err != nil {
 			return created, deleted, err
 		}

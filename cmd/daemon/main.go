@@ -75,8 +75,9 @@ func main() {
 	}
 
 	r := &daemon.Reconciler{
-		Pods: daemon.K8sPodLister{Client: clientset, NodeName: nodeName},
-		NADs: daemon.K8sNADGetter{Dyn: dyn},
+		Pods:     daemon.K8sPodLister{Client: clientset, NodeName: nodeName},
+		NADs:     daemon.K8sNADGetter{Dyn: dyn},
+		GCOrphan: daemon.SocketGone,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

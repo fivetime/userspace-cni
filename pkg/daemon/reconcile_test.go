@@ -91,7 +91,7 @@ func TestReconcile(t *testing.T) {
 
 	// Desired {A,B}, VPP has {B,C}: create A, delete C (swIfIndex 10), keep B.
 	f := &fakeDataplane{dump: []Memif{Bact, Cact}}
-	created, deleted, err := Reconcile(f, []Memif{A, {Socket: "/run/vpp/app2/b.sock"}})
+	created, deleted, err := Reconcile(f, []Memif{A, {Socket: "/run/vpp/app2/b.sock"}}, nil)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestReconcile(t *testing.T) {
 func TestReconcileIdempotent(t *testing.T) {
 	Bact := Memif{Socket: "/run/vpp/app2/b.sock", SwIfIndex: 9}
 	f := &fakeDataplane{dump: []Memif{Bact}}
-	created, deleted, err := Reconcile(f, []Memif{{Socket: "/run/vpp/app2/b.sock"}})
+	created, deleted, err := Reconcile(f, []Memif{{Socket: "/run/vpp/app2/b.sock"}}, nil)
 	if err != nil || created != 0 || deleted != 0 {
 		t.Fatalf("steady state should be a no-op: created=%d deleted=%d err=%v", created, deleted, err)
 	}
@@ -117,10 +117,29 @@ func TestReconcileIdempotent(t *testing.T) {
 
 func TestReconcileDumpError(t *testing.T) {
 	f := &fakeDataplane{dumpErr: errors.New("vpp down")}
-	if _, _, err := Reconcile(f, []Memif{{Socket: "/run/vpp/app1/a.sock"}}); err == nil {
+	if _, _, err := Reconcile(f, []Memif{{Socket: "/run/vpp/app1/a.sock"}}, nil); err == nil {
 		t.Fatal("expected error when dump fails")
 	}
 	if len(f.created) != 0 || len(f.deleted) != 0 {
 		t.Error("must not mutate VPP when the initial dump fails")
+	}
+}
+
+func TestReconcileGCGuardKeepsUnconfirmed(t *testing.T) {
+	// Two orphans; the guard confirms only the one whose socket is "gone".
+	gone := Memif{Socket: "/run/vpp/old/gone.sock", SwIfIndex: 1}
+	present := Memif{Socket: "/run/vpp/app1/present.sock", SwIfIndex: 2}
+	f := &fakeDataplane{dump: []Memif{gone, present}}
+	guard := func(m Memif) bool { return m.Socket == gone.Socket }
+
+	created, deleted, err := Reconcile(f, nil, guard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created != 0 || deleted != 1 {
+		t.Fatalf("created=%d deleted=%d, want 0/1", created, deleted)
+	}
+	if !reflect.DeepEqual(f.deleted, []uint32{1}) {
+		t.Errorf("deleted = %v, want [1] (only the confirmed-abandoned orphan)", f.deleted)
 	}
 }
