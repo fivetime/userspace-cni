@@ -146,6 +146,14 @@ func DeleteMemifInterface(ch api.Channel, swIfIndex interface_types.InterfaceInd
 		}
 	}
 
+	// Idempotent DELETE: if the memif is already absent (e.g. VPP was restarted
+	// since CNI ADD), there is nothing to delete. Treat as success so the caller
+	// still proceeds to clean up the socket file.
+	if !exist {
+		logging.Debugf("DeleteMemifInterface: memif (swIfIndex=%d) already absent, treating delete as no-op", swIfIndex)
+		return nil
+	}
+
 	// Populate the Delete Structure
 	req := &memif.MemifDelete{
 		SwIfIndex: swIfIndex,

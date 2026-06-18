@@ -229,13 +229,13 @@ func (cniVpp CniVpp) DelFromHost(conf *types.NetConf, args *skel.CmdArgs, shared
 		err = vppbridge.RemoveBridgeInterface(vppCh.Ch, bridgeDomain, interface_types.InterfaceIndex(data.InterfaceSwIfIndex))
 
 		if err != nil {
-			logging.Debugf("DelFromHost(vpp): Error removing interface from bridge: %v", err)
-			return err
-		} else {
-			if dbgBridge {
-				logging.Verbosef("INTERFACE %d removed from BRIDGE %d\n", data.InterfaceSwIfIndex, bridgeDomain)
-				vppbridge.DumpBridge(vppCh.Ch, bridgeDomain)
-			}
+			// Non-fatal: the bridge or interface may already be gone (e.g. VPP was
+			// restarted since CNI ADD). Log and continue so the memif + socket-file
+			// cleanup below still run, keeping CNI DELETE idempotent.
+			logging.Debugf("DelFromHost(vpp): Error removing interface from bridge (continuing): %v", err)
+		} else if dbgBridge {
+			logging.Verbosef("INTERFACE %d removed from BRIDGE %d\n", data.InterfaceSwIfIndex, bridgeDomain)
+			vppbridge.DumpBridge(vppCh.Ch, bridgeDomain)
 		}
 	}
 
@@ -434,21 +434,27 @@ func delLocalDeviceMemif(vppCh vppinfra.ConnectionData, conf *types.NetConf, arg
 	// Retrieve the Socketfile name
 	memifSocketPath := getMemifSocketfileName(conf, sharedDir, args.ContainerID, args.IfName)
 
-	// Delete the memif interface
+	// Always remove the socket file this plugin created, regardless of the
+	// VPP-side outcome. The memif may already be gone (e.g. VPP was restarted
+	// since CNI ADD); CNI DELETE must still leave the shared dir clean.
+	defer func() {
+		if cleanupErr := configdata.FileCleanup("", memifSocketPath); cleanupErr != nil {
+			logging.Debugf("delLocalDeviceMemif(vpp): socket file cleanup: %v", cleanupErr)
+		}
+	}()
+
+	// Delete the memif interface. DeleteMemifInterface is idempotent: an
+	// already-absent memif is treated as success.
 	err = vppmemif.DeleteMemifInterface(vppCh.Ch, interface_types.InterfaceIndex(data.InterfaceSwIfIndex))
 	if err != nil {
 		logging.Debugf("delLocalDeviceMemif(vpp): Error deleting memif inteface: %v", err)
 		return logging.Errorf("delLocalDeviceMemif(vpp): Error deleting memif inteface: %v", err)
-	} else {
-		if dbgInterface {
-			logging.Verbosef("INTERFACE %d deleted\n", data.InterfaceSwIfIndex)
-			vppmemif.DumpMemif(vppCh.Ch)
-			vppmemif.DumpMemifSocket(vppCh.Ch)
-		}
+	}
+	if dbgInterface {
+		logging.Verbosef("INTERFACE %d deleted\n", data.InterfaceSwIfIndex)
+		vppmemif.DumpMemif(vppCh.Ch)
+		vppmemif.DumpMemifSocket(vppCh.Ch)
 	}
 
-	// Remove socketfile
-	err = configdata.FileCleanup("", memifSocketPath)
-
-	return
+	return nil
 }
