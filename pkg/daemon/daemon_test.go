@@ -76,18 +76,25 @@ func TestReconcilerSync(t *testing.T) {
 	}
 }
 
-func TestReconcilerSyncAbortsOnBadNAD(t *testing.T) {
-	dp := &fakeDataplane{dump: []Memif{{Socket: "/run/vpp/app1/x.sock", SwIfIndex: 7}}}
+func TestReconcilerSyncSkipsBadPod(t *testing.T) {
+	// A good pod (valid NAD) alongside a bad one (missing NAD). The bad pod is
+	// skipped — Sync does not error and still reconciles the good pod. (GC stays
+	// safe via GCOrphan/SocketGone, exercised separately.)
+	dp := &fakeDataplane{} // VPP empty → the good pod's master gets created.
+	good := memifPod()
+	bad := memifPod()
+	bad.Name = "app-bad"
+	bad.Annotations[netAnnotKey] = "missing-nad"
 	r := &Reconciler{
-		Pods: fakePods{pods: []corev1.Pod{memifPod()}},
-		NADs: fakeNADs{cfg: map[string]string{}}, // NAD missing → desiredForPod errors
+		Pods: fakePods{pods: []corev1.Pod{good, bad}},
+		NADs: fakeNADs{cfg: map[string]string{"vpp/userspace-vpp-net-1": sampleNAD}},
 		DP:   dp,
 	}
-	if _, _, err := r.Sync(context.Background()); err == nil {
-		t.Fatal("expected Sync to fail when a pod's NAD is missing")
+	created, _, err := r.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync should skip the bad pod, not fail: %v", err)
 	}
-	// Must not have touched the dataplane on incomplete desired (no wrong GC).
-	if len(dp.created) != 0 || len(dp.deleted) != 0 {
-		t.Errorf("dataplane mutated on abort: created=%v deleted=%v", dp.created, dp.deleted)
+	if created != 1 {
+		t.Fatalf("created=%d, want 1 (good pod created; bad pod skipped)", created)
 	}
 }

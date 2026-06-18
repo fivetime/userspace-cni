@@ -21,6 +21,8 @@ import (
 	"os"
 
 	corev1 "k8s.io/api/core/v1"
+
+	"github.com/intel/userspace-cni-network-plugin/logging"
 )
 
 // SocketGone reports whether a memif's host socket file is absent. The daemon
@@ -56,9 +58,14 @@ type Reconciler struct {
 }
 
 // Sync builds the desired set of memif masters from the live node-local pods and
-// converges the dataplane to it. It aborts (without touching the dataplane) if
-// any pod's intent cannot be evaluated — proceeding on incomplete desired could
-// misclassify a live memif as an orphan and delete it.
+// converges the dataplane to it.
+//
+// A pod whose intent cannot be evaluated (e.g. its NAD is transiently unreadable)
+// is logged and SKIPPED rather than aborting the whole node's reconcile — at
+// scale (e.g. a boot storm) one bad pod must not block every other pod's restore.
+// Skipping a pod is safe for GC because deletion is gated by GCOrphan (SocketGone):
+// a skipped-but-live pod keeps its socket file, so its memif is never GC'd; it is
+// simply restored on a later reconcile once its intent is readable.
 func (r *Reconciler) Sync(ctx context.Context) (created, deleted int, err error) {
 	pods, err := r.Pods.ListNodePods(ctx)
 	if err != nil {
@@ -71,7 +78,8 @@ func (r *Reconciler) Sync(ctx context.Context) (created, deleted int, err error)
 		}
 		ms, perr := desiredForPod(&pods[i], nadLookup)
 		if perr != nil {
-			return 0, 0, fmt.Errorf("pod %s/%s: %w", pods[i].Namespace, pods[i].Name, perr)
+			logging.Warningf("restore-daemon: skipping pod %s/%s: %v", pods[i].Namespace, pods[i].Name, perr)
+			continue
 		}
 		desired = append(desired, ms...)
 	}

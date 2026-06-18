@@ -98,8 +98,20 @@ under the userspace-cni shared dir):
   the same socket (and re-add it to its bridge-domain). The pods' slaves
   **auto-reconnect** to a master that reappears on the same socket — **no
   workload restart**. Reuses the existing `cnivpp/api` memif + bridge wrappers.
-- **GC-orphan** (optional) — a master with no backing live pod (e.g. a CNI DEL
-  that could not run while VPP was down) may be removed.
+- **GC-orphan** — a master with no backing live pod (e.g. a CNI DEL that could
+  not run while VPP was down) is removed, but only when **confined** and
+  **confirmed** ("whoever creates it destroys it"):
+  - *confined* to the shared-dir prefix (`socketPrefix`) — the daemon never
+    touches a memif another component created on the same VPP;
+  - *confirmed* by `SocketGone` — deleted only when the host socket file is
+    absent. CNI ADD creates the socket and CNI DEL removes it, so a memif whose
+    CNI ADD is still in flight (socket present) is never GC'd. This is what makes
+    a boot storm safe: in-flight creations are not mistaken for orphans.
+
+The reconcile also **skips** (rather than aborts on) any pod whose intent cannot
+be evaluated — at scale one unreadable NAD must not block the whole node; the
+skipped pod is restored on a later reconcile, and GC stays safe via the guard
+above.
 
 ### Deployment
 
