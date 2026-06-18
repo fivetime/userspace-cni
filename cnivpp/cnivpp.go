@@ -212,10 +212,25 @@ func (cniVpp CniVpp) DelFromHost(conf *types.NetConf, args *skel.CmdArgs, shared
 		return err
 	}
 
+	// For memif, resolve the CURRENT sw_if_index from the socket. The index saved
+	// at ADD can be stale (e.g. the restore daemon recreated the memif with a new
+	// index after a VPP restart); using it could touch the wrong interface. If no
+	// memif is on this socket, it is already gone — skip the VPP teardown (the
+	// socket file is still cleaned by delLocalDeviceMemif).
+	memifGone := false
+	if conf.HostConf.IfType == "memif" {
+		socketPath := getMemifSocketfileName(conf, sharedDir, args.ContainerID, args.IfName)
+		if idx, found := vppmemif.FindMemifBySocket(vppCh.Ch, socketPath); found {
+			data.InterfaceSwIfIndex = idx
+		} else {
+			memifGone = true
+		}
+	}
+
 	//
 	// Remove L2 Network if supplied
 	//
-	if conf.HostConf.NetType == "bridge" {
+	if conf.HostConf.NetType == "bridge" && !memifGone {
 
 		// Validate and convert input data
 		var bridgeDomain uint32 = uint32(conf.HostConf.BridgeConf.BridgeId)
@@ -243,7 +258,7 @@ func (cniVpp CniVpp) DelFromHost(conf *types.NetConf, args *skel.CmdArgs, shared
 	// Delete Local Interface
 	//
 	if conf.HostConf.IfType == "memif" {
-		return delLocalDeviceMemif(vppCh, conf, args, sharedDir, &data)
+		return delLocalDeviceMemif(vppCh, conf, args, sharedDir, &data, memifGone)
 	} else if conf.HostConf.IfType == "vhostuser" {
 		return delLocalDeviceVhostUser(vppCh, conf, args, sharedDir, &data)
 	}
@@ -430,7 +445,7 @@ func addLocalDeviceMemif(vppCh vppinfra.ConnectionData,
 	return
 }
 
-func delLocalDeviceMemif(vppCh vppinfra.ConnectionData, conf *types.NetConf, args *skel.CmdArgs, sharedDir string, data *VppSavedData) (err error) {
+func delLocalDeviceMemif(vppCh vppinfra.ConnectionData, conf *types.NetConf, args *skel.CmdArgs, sharedDir string, data *VppSavedData, memifGone bool) (err error) {
 	// Retrieve the Socketfile name
 	memifSocketPath := getMemifSocketfileName(conf, sharedDir, args.ContainerID, args.IfName)
 
@@ -443,8 +458,15 @@ func delLocalDeviceMemif(vppCh vppinfra.ConnectionData, conf *types.NetConf, arg
 		}
 	}()
 
-	// Delete the memif interface. DeleteMemifInterface is idempotent: an
-	// already-absent memif is treated as success.
+	// No memif on this socket (already gone) — nothing to delete in VPP; the
+	// socket file is cleaned by the deferred FileCleanup above.
+	if memifGone {
+		logging.Debugf("delLocalDeviceMemif(vpp): memif already absent on %s; cleaned socket only", memifSocketPath)
+		return nil
+	}
+
+	// Delete the memif interface by its CURRENT sw_if_index (resolved from the
+	// socket by the caller).
 	err = vppmemif.DeleteMemifInterface(vppCh.Ch, interface_types.InterfaceIndex(data.InterfaceSwIfIndex))
 	if err != nil {
 		logging.Debugf("delLocalDeviceMemif(vpp): Error deleting memif inteface: %v", err)

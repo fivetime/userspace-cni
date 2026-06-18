@@ -424,6 +424,32 @@ func findMemifSocketCnt(ch api.Channel, socketId uint32) (count uint32) {
 //	bool - Found flag
 //	uint32 - If found is true: associated socketId.
 //	         If found is false: next free socketId.
+// FindMemifBySocket returns the sw_if_index of the memif currently registered on
+// socketFilename, resolved from live VPP state. Use this for delete instead of an
+// index saved earlier, which can be stale (e.g. a memif recreated with a new
+// index after a VPP restart). found=false if no memif is on that socket.
+func FindMemifBySocket(ch api.Channel, socketFilename string) (interface_types.InterfaceIndex, bool) {
+	ok, socketId := findMemifSocket(ch, socketFilename)
+	if !ok {
+		return 0, false
+	}
+	reqCtx := ch.SendMultiRequest(&memif.MemifDump{})
+	for {
+		reply := &memif.MemifDetails{}
+		stop, err := reqCtx.ReceiveReply(reply)
+		if stop {
+			break
+		}
+		if err != nil {
+			continue
+		}
+		if reply.SocketID == socketId {
+			return reply.SwIfIndex, true
+		}
+	}
+	return 0, false
+}
+
 func findMemifSocket(ch api.Channel, socketFilename string) (found bool, socketId uint32) {
 
 	var count int
