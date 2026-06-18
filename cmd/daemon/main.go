@@ -1,3 +1,5 @@
+//go:build linux
+
 /*
  * Copyright(c) 2026 The userspace-cni Authors.
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,8 +15,6 @@
  * limitations under the License.
  */
 
-//go:build linux
-
 // Command userspace-daemon is the per-node restore daemon: it watches the node
 // VPP connection and, on (re)connect, re-asserts the memif masters userspace-cni
 // owns (VPP loses them on restart). See docs/proposals/vpp-memif-restore-daemon.md.
@@ -25,6 +25,7 @@ package main
 import (
 	"context"
 	"flag"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -38,13 +39,15 @@ import (
 )
 
 func main() {
-	var apiSocket, socketPrefix, logLevel string
+	var apiSocket, socketPrefix, logLevel, metricsAddr string
 	flag.StringVar(&apiSocket, "vpp-api-socket", "",
 		"VPP binary API socket (empty = govpp default /run/vpp/api.sock)")
 	flag.StringVar(&socketPrefix, "socket-prefix", "",
-		"only manage memif masters whose socket is under this prefix (empty = all memifs)")
+		"only manage memif masters whose socket is under this prefix (comma-separated; empty = all memifs)")
 	flag.StringVar(&logLevel, "log-level", "info",
 		"log level (verbose|debug|info|warning|error|panic)")
+	flag.StringVar(&metricsAddr, "metrics-addr", ":9101",
+		"listen address for /healthz, /readyz and /metrics")
 	flag.Parse()
 
 	// Log to stderr at the requested level so `kubectl logs` surfaces the
@@ -74,11 +77,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	status := &daemon.Status{}
 	r := &daemon.Reconciler{
 		Pods:     daemon.K8sPodLister{Client: clientset, NodeName: nodeName},
 		NADs:     daemon.K8sNADGetter{Dyn: dyn},
 		GCOrphan: daemon.SocketGone,
+		Status:   status,
 	}
+
+	go func() {
+		logging.Infof("restore-daemon: serving health/metrics on %s", metricsAddr)
+		if err := http.ListenAndServe(metricsAddr, status.Handler()); err != nil {
+			logging.Errorf("restore-daemon: metrics server stopped: %v", err)
+		}
+	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

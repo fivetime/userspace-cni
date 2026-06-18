@@ -55,6 +55,8 @@ type Reconciler struct {
 	// GCOrphan gates orphan deletion (see Reconcile). nil deletes every orphan;
 	// the daemon sets it to SocketGone.
 	GCOrphan func(Memif) bool
+	// Status, if set, receives connection/reconcile observability updates.
+	Status *Status
 }
 
 // Sync builds the desired set of memif masters from the live node-local pods and
@@ -71,11 +73,29 @@ func (r *Reconciler) Sync(ctx context.Context) (created, deleted int, err error)
 	if err != nil {
 		return 0, 0, fmt.Errorf("list node pods: %w", err)
 	}
+	// Per-reconcile NAD cache: many pods share a NAD, so memoize the Gets (and
+	// their errors) for this Sync to avoid O(pods) duplicate API calls at scale.
+	nadCache := map[string]string{}
+	nadErr := map[string]error{}
+	nadLookup := func(ns, name string) (string, error) {
+		key := ns + "/" + name
+		if e, ok := nadErr[key]; ok {
+			return "", e
+		}
+		if c, ok := nadCache[key]; ok {
+			return c, nil
+		}
+		cfg, gerr := r.NADs.GetNADConfig(ctx, ns, name)
+		if gerr != nil {
+			nadErr[key] = gerr
+			return "", gerr
+		}
+		nadCache[key] = cfg
+		return cfg, nil
+	}
+
 	var desired []Memif
 	for i := range pods {
-		nadLookup := func(ns, name string) (string, error) {
-			return r.NADs.GetNADConfig(ctx, ns, name)
-		}
 		ms, perr := desiredForPod(&pods[i], nadLookup)
 		if perr != nil {
 			logging.Warningf("restore-daemon: skipping pod %s/%s: %v", pods[i].Namespace, pods[i].Name, perr)

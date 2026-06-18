@@ -1,3 +1,5 @@
+//go:build linux
+
 /*
  * Copyright(c) 2026 The userspace-cni Authors.
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,8 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-//go:build linux
 
 package daemon
 
@@ -36,6 +36,8 @@ const (
 	reconnectInterval = 500 * time.Millisecond
 	syncReplyTimeout  = 5 * time.Second
 	runRetryBackoff   = 2 * time.Second
+	// reconcileDebounce coalesces a burst of (re)connect events into one reconcile.
+	reconcileDebounce = time.Second
 )
 
 // Run watches the node VPP connection and re-asserts this node's memif masters
@@ -68,6 +70,13 @@ func (r *Reconciler) watchOnce(ctx context.Context, apiSocket, socketPrefix stri
 	}
 	defer conn.Disconnect()
 
+	// Coalesce a burst of (re)connect events (VPP can flap while it settles) into
+	// a single reconcile after a short quiet period. go1.23+ Timer.Reset/Stop
+	// drain the channel, so no manual drain is needed.
+	debounce := time.NewTimer(time.Hour)
+	debounce.Stop()
+	defer debounce.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -78,13 +87,25 @@ func (r *Reconciler) watchOnce(ctx context.Context, apiSocket, socketPrefix stri
 			}
 			switch ev.State {
 			case core.Connected:
-				logging.Infof("restore-daemon: VPP connected; reconciling memifs")
-				r.onConnected(ctx, conn, socketPrefix)
+				logging.Infof("restore-daemon: VPP connected; reconcile in %s", reconcileDebounce)
+				if r.Status != nil {
+					r.Status.SetConnected(true)
+				}
+				debounce.Reset(reconcileDebounce)
 			case core.Disconnected:
 				logging.Infof("restore-daemon: VPP disconnected; will re-assert memifs on reconnect")
+				if r.Status != nil {
+					r.Status.SetConnected(false)
+				}
+				debounce.Stop()
 			case core.Failed:
+				if r.Status != nil {
+					r.Status.SetConnected(false)
+				}
 				return fmt.Errorf("vpp connection failed: %v", ev.Error)
 			}
+		case <-debounce.C:
+			r.onConnected(ctx, conn, socketPrefix)
 		}
 	}
 }
@@ -102,6 +123,9 @@ func (r *Reconciler) onConnected(ctx context.Context, conn *core.Connection, soc
 
 	r.DP = NewVPPDataplane(ch, socketPrefix)
 	created, deleted, err := r.Sync(ctx)
+	if r.Status != nil {
+		r.Status.RecordReconcile(created, deleted, err)
+	}
 	if err != nil {
 		logging.Errorf("restore-daemon: memif reconcile failed: %v", err)
 		return

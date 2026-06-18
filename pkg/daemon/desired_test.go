@@ -90,7 +90,7 @@ func TestDesiredForPod(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "vpp",
 			Annotations: map[string]string{
-				netAnnotKey:                        "userspace-vpp-net-1",
+				netAnnotKey:                         "userspace-vpp-net-1",
 				annotations.AnnotKeyUsrspConfigData: sampleConfigData,
 			},
 		},

@@ -278,9 +278,7 @@ func getMemifSocketfileName(conf *types.NetConf,
 	sharedDir string,
 	containerID string,
 	ifName string) string {
-	if conf.HostConf.MemifConf.Socketfile == "" {
-		conf.HostConf.MemifConf.Socketfile = fmt.Sprintf("memif-%s-%s.sock", containerID[:12], ifName)
-	}
+	conf.HostConf.MemifConf.Socketfile = vppmemif.SocketFileName(conf.HostConf.MemifConf.Socketfile, containerID, ifName)
 	return filepath.Join(sharedDir, conf.HostConf.MemifConf.Socketfile)
 }
 

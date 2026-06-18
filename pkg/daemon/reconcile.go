@@ -38,6 +38,18 @@ type Memif struct {
 	Mode string
 	// SwIfIndex is the VPP-assigned index; set on actual entries (used to delete).
 	SwIfIndex uint32
+
+	// Tuning carried from the NAD host config so a restored master matches the
+	// original (not VPP defaults). Zero values mean "use the create defaults".
+	RxQueues   uint8
+	TxQueues   uint8
+	RingSize   uint32
+	BufferSize uint16
+	Secret     string
+	HwAddr     string // host MAC (MAC) — "" = VPP picks one
+	NoZeroCopy bool
+	UseDma     bool
+	MTU        uint32 // host-side MTU; 0 = leave engine default
 }
 
 // Dataplane is the seam over the node VPP. The govpp-backed implementation is

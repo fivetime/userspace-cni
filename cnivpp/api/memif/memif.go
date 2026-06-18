@@ -424,6 +424,21 @@ func findMemifSocketCnt(ch api.Channel, socketId uint32) (count uint32) {
 //	bool - Found flag
 //	uint32 - If found is true: associated socketId.
 //	         If found is false: next free socketId.
+//
+// SocketFileName returns the memif socket file name (no path): the explicit
+// override if set, else memif-<containerID[:12]>-<ifName>.sock. Shared by the CNI
+// ADD/DEL path and the restore daemon so the naming convention lives in one place.
+func SocketFileName(override, containerID, ifName string) string {
+	if override != "" {
+		return override
+	}
+	cid := containerID
+	if len(cid) > 12 {
+		cid = cid[:12]
+	}
+	return fmt.Sprintf("memif-%s-%s.sock", cid, ifName)
+}
+
 // FindMemifBySocket returns the sw_if_index of the memif currently registered on
 // socketFilename, resolved from live VPP state. Use this for delete instead of an
 // index saved earlier, which can be stale (e.g. a memif recreated with a new

@@ -1,3 +1,5 @@
+//go:build linux
+
 /*
  * Copyright(c) 2026 The userspace-cni Authors.
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,8 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-//go:build linux
 
 package daemon
 
@@ -36,15 +36,32 @@ import (
 // reconciliation to the userspace-cni shared dir so it never touches a memif (or
 // any interface) owned by something else.
 type vppDataplane struct {
-	ch           govppapi.Channel
-	socketPrefix string
+	ch             govppapi.Channel
+	socketPrefixes []string
 }
 
-// NewVPPDataplane wraps an existing govpp API channel. socketPrefix (e.g.
-// "/var/run/vpp/" or the configured shared-dir root) limits which masters are
-// managed; "" disables the prefix guard (memif_dump already excludes non-memifs).
+// NewVPPDataplane wraps an existing govpp API channel. socketPrefix is a
+// comma-separated list of shared-dir roots (e.g. "/run/vpp,/var/run/vpp"); only
+// memif masters whose socket is under one of them are managed, confining the
+// daemon to memifs userspace-cni created. "" disables the guard (memif_dump
+// already excludes non-memifs).
 func NewVPPDataplane(ch govppapi.Channel, socketPrefix string) Dataplane {
-	return &vppDataplane{ch: ch, socketPrefix: socketPrefix}
+	var prefixes []string
+	for _, p := range strings.Split(socketPrefix, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			prefixes = append(prefixes, p)
+		}
+	}
+	return &vppDataplane{ch: ch, socketPrefixes: prefixes}
+}
+
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *vppDataplane) DumpMasters() ([]Memif, error) {
@@ -67,7 +84,7 @@ func (d *vppDataplane) DumpMasters() ([]Memif, error) {
 			continue // we only own the host-side masters
 		}
 		sock := socks[det.SocketID]
-		if d.socketPrefix != "" && !strings.HasPrefix(sock, d.socketPrefix) {
+		if len(d.socketPrefixes) > 0 && !hasAnyPrefix(sock, d.socketPrefixes) {
 			continue
 		}
 		out = append(out, Memif{
@@ -87,16 +104,28 @@ func (d *vppDataplane) CreateMaster(m Memif) error {
 		return fmt.Errorf("memif socket %s: %w", m.Socket, err)
 	}
 	swIfIndex, err := vppmemif.CreateMemifInterface(d.ch, vppmemif.CreateParams{
-		SocketID: socketID,
-		Role:     memif.MEMIF_ROLE_API_MASTER,
-		Mode:     parseMode(m.Mode),
-		// RxQueues/TxQueues/RingSize/BufferSize: 0 → CreateMemifInterface defaults.
+		SocketID:   socketID,
+		Role:       memif.MEMIF_ROLE_API_MASTER,
+		Mode:       parseMode(m.Mode),
+		RxQueues:   m.RxQueues,   // 0 → CreateMemifInterface default (1)
+		TxQueues:   m.TxQueues,   // 0 → default (1)
+		RingSize:   m.RingSize,   // 0 → default (1024)
+		BufferSize: m.BufferSize, // 0 → default (2048)
+		Secret:     m.Secret,
+		NoZeroCopy: m.NoZeroCopy,
+		UseDma:     m.UseDma,
+		HwAddr:     m.HwAddr,
 	})
 	if err != nil {
 		return fmt.Errorf("memif create %s: %w", m.Socket, err)
 	}
 	if err := vppinterface.SetState(d.ch, swIfIndex, interface_types.IF_STATUS_API_FLAG_ADMIN_UP); err != nil {
 		return fmt.Errorf("memif set-up %s: %w", m.Socket, err)
+	}
+	if m.MTU > 0 {
+		if err := vppinterface.SetMtu(d.ch, swIfIndex, m.MTU); err != nil {
+			return fmt.Errorf("memif set-mtu %s: %w", m.Socket, err)
+		}
 	}
 	if m.BridgeID != 0 {
 		// AddBridgeInterface creates the bridge-domain if it does not exist.

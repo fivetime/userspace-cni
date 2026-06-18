@@ -24,6 +24,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	vppmemif "github.com/intel/userspace-cni-network-plugin/cnivpp/api/memif"
 	"github.com/intel/userspace-cni-network-plugin/pkg/annotations"
 	"github.com/intel/userspace-cni-network-plugin/pkg/types"
 )
@@ -109,14 +110,7 @@ func bridgeDomainID(b types.BridgeConf) (uint32, error) {
 // getMemifSocketfileName: the host MemifConf.Socketfile if set, else
 // memif-<containerID[:12]>-<ifName>.sock.
 func socketFileName(e types.ConfigurationData, host types.UserSpaceConf) string {
-	if host.MemifConf.Socketfile != "" {
-		return host.MemifConf.Socketfile
-	}
-	cid := e.ContainerId
-	if len(cid) > 12 {
-		cid = cid[:12]
-	}
-	return fmt.Sprintf("memif-%s-%s.sock", cid, e.IfName)
+	return vppmemif.SocketFileName(host.MemifConf.Socketfile, e.ContainerId, e.IfName)
 }
 
 // desiredMemif builds the host memif master for one configuration-data entry,
@@ -142,10 +136,19 @@ func desiredMemif(e types.ConfigurationData, host types.UserSpaceConf, hostShare
 		mode = e.Config.MemifConf.Mode
 	}
 	return Memif{
-		Socket:   path.Join(hostSharedDir, socketFileName(e, host)),
-		ID:       0, // userspace-cni creates the pair with memif id 0
-		BridgeID: bdID,
-		Mode:     mode,
+		Socket:     path.Join(hostSharedDir, socketFileName(e, host)),
+		ID:         0, // userspace-cni creates the pair with memif id 0
+		BridgeID:   bdID,
+		Mode:       mode,
+		RxQueues:   host.MemifConf.RxQueues,
+		TxQueues:   host.MemifConf.TxQueues,
+		RingSize:   host.MemifConf.RingSize,
+		BufferSize: host.MemifConf.BufferSize,
+		Secret:     host.MemifConf.Secret,
+		HwAddr:     host.MAC,
+		NoZeroCopy: host.MemifConf.NoZeroCopy,
+		UseDma:     host.MemifConf.UseDma,
+		MTU:        uint32(host.MTU),
 	}, true, nil
 }
 
