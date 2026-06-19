@@ -19,7 +19,6 @@ package daemon
 
 import (
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,29 +160,42 @@ func (d *vppDataplane) DeleteMaster(m Memif) error {
 const orphanSocketMinAge = 60 * time.Second
 
 func (d *vppDataplane) SweepOrphanSockets(keep map[string]struct{}) (int, error) {
+	// Scan only the directories that already hold wanted sockets, derived from keep
+	// itself, so the paths we compare share keep's exact form. Walking a configured
+	// prefix instead risks a /var/run -> /run symlink alias whose paths never match
+	// keep, which would delete the live sockets. A dir is scanned only because a
+	// live/actual socket lives there, so orphan files beside it are safe to reap.
+	dirs := map[string]struct{}{}
+	for sock := range keep {
+		dirs[filepath.Dir(sock)] = struct{}{}
+	}
 	removed := 0
-	for _, root := range d.socketPrefixes {
-		_ = filepath.WalkDir(root, func(path string, e fs.DirEntry, err error) error {
-			if err != nil || e.IsDir() {
-				return nil
+	for dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
 			}
 			name := e.Name()
 			if !strings.HasPrefix(name, "memif-") || !strings.HasSuffix(name, ".sock") {
-				return nil
+				continue
 			}
+			path := filepath.Join(dir, name)
 			if _, ok := keep[path]; ok {
-				return nil // backs a memif or a pod wants it
+				continue // backs a memif or a pod wants it
 			}
 			info, ierr := e.Info()
 			if ierr != nil || time.Since(info.ModTime()) < orphanSocketMinAge {
-				return nil
+				continue // recently created — may be an in-flight CNI ADD
 			}
 			if rerr := os.Remove(path); rerr == nil {
 				removed++
 				logging.Infof("restore-daemon: swept orphan socket %s", path)
 			}
-			return nil
-		})
+		}
 	}
 	return removed, nil
 }
