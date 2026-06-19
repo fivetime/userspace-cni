@@ -62,8 +62,15 @@ type Dataplane interface {
 	// CreateMaster (re)creates the memif master on m.Socket and bridges it into
 	// m.BridgeID when non-zero. The pod's slave auto-reconnects.
 	CreateMaster(m Memif) error
-	// DeleteMaster removes the memif at swIfIndex.
-	DeleteMaster(swIfIndex uint32) error
+	// DeleteMaster removes the memif (m.SwIfIndex) AND its host socket file
+	// (m.Socket) — when the daemon GCs an orphan, CNI DEL never ran, so the daemon
+	// owns the full cleanup so nothing is left on disk.
+	DeleteMaster(m Memif) error
+	// SweepOrphanSockets removes memif socket files in the managed shared dirs that
+	// back no memif and are wanted by no pod (keep = desired ∪ actual sockets) —
+	// cleaning files left behind when a memif was already gone. Implementations
+	// must skip recently-created files to avoid racing an in-flight CNI ADD.
+	SweepOrphanSockets(keep map[string]struct{}) (removed int, err error)
 }
 
 // Diff compares the desired memif masters against what VPP actually has,
@@ -117,10 +124,21 @@ func Reconcile(dp Dataplane, desired []Memif, gcOrphan func(Memif) bool) (create
 		if gcOrphan != nil && !gcOrphan(m) {
 			continue // not confirmed abandoned (e.g. CNI ADD in flight) — keep it
 		}
-		if err = dp.DeleteMaster(m.SwIfIndex); err != nil {
+		if err = dp.DeleteMaster(m); err != nil {
 			return created, deleted, err
 		}
 		deleted++
 	}
+	// Sweep socket files that back no memif and no pod wants (orphans left when a
+	// memif was already gone). Best-effort: a failure here does not undo the
+	// converged memif state above.
+	keep := make(map[string]struct{}, len(desired)+len(actual))
+	for i := range desired {
+		keep[desired[i].Socket] = struct{}{}
+	}
+	for i := range actual {
+		keep[actual[i].Socket] = struct{}{}
+	}
+	_, _ = dp.SweepOrphanSockets(keep)
 	return created, deleted, nil
 }

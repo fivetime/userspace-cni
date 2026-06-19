@@ -19,7 +19,11 @@ package daemon
 
 import (
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	govppapi "go.fd.io/govpp/api"
 	"go.fd.io/govpp/binapi/interface_types"
@@ -28,6 +32,7 @@ import (
 	vppbridge "github.com/intel/userspace-cni-network-plugin/cnivpp/api/bridge"
 	vppinterface "github.com/intel/userspace-cni-network-plugin/cnivpp/api/interface"
 	vppmemif "github.com/intel/userspace-cni-network-plugin/cnivpp/api/memif"
+	"github.com/intel/userspace-cni-network-plugin/logging"
 )
 
 // vppDataplane implements Dataplane over a govpp API channel. It reuses
@@ -136,12 +141,51 @@ func (d *vppDataplane) CreateMaster(m Memif) error {
 	return nil
 }
 
-func (d *vppDataplane) DeleteMaster(swIfIndex uint32) error {
+func (d *vppDataplane) DeleteMaster(m Memif) error {
 	// DeleteMemifInterface is idempotent (an already-absent memif is a no-op).
-	if err := vppmemif.DeleteMemifInterface(d.ch, interface_types.InterfaceIndex(swIfIndex)); err != nil {
-		return fmt.Errorf("memif delete (swIfIndex %d): %w", swIfIndex, err)
+	if err := vppmemif.DeleteMemifInterface(d.ch, interface_types.InterfaceIndex(m.SwIfIndex)); err != nil {
+		return fmt.Errorf("memif delete (swIfIndex %d): %w", m.SwIfIndex, err)
+	}
+	// CNI DEL normally removes the host socket file; when the daemon GCs an orphan
+	// CNI DEL never cleaned, remove it too so nothing is left on disk.
+	if m.Socket != "" {
+		if err := os.Remove(m.Socket); err != nil && !os.IsNotExist(err) {
+			logging.Warningf("restore-daemon: remove orphan socket %s: %v", m.Socket, err)
+		}
 	}
 	return nil
+}
+
+// orphanSocketMinAge skips sweeping files newer than this, so a socket a CNI ADD
+// just created (before its memif shows in a dump) is never mistaken for an orphan.
+const orphanSocketMinAge = 60 * time.Second
+
+func (d *vppDataplane) SweepOrphanSockets(keep map[string]struct{}) (int, error) {
+	removed := 0
+	for _, root := range d.socketPrefixes {
+		_ = filepath.WalkDir(root, func(path string, e fs.DirEntry, err error) error {
+			if err != nil || e.IsDir() {
+				return nil
+			}
+			name := e.Name()
+			if !strings.HasPrefix(name, "memif-") || !strings.HasSuffix(name, ".sock") {
+				return nil
+			}
+			if _, ok := keep[path]; ok {
+				return nil // backs a memif or a pod wants it
+			}
+			info, ierr := e.Info()
+			if ierr != nil || time.Since(info.ModTime()) < orphanSocketMinAge {
+				return nil
+			}
+			if rerr := os.Remove(path); rerr == nil {
+				removed++
+				logging.Infof("restore-daemon: swept orphan socket %s", path)
+			}
+			return nil
+		})
+	}
+	return removed, nil
 }
 
 func (d *vppDataplane) dumpSockets() (map[uint32]string, error) {

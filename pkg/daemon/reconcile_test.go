@@ -79,10 +79,11 @@ func (f *fakeDataplane) CreateMaster(m Memif) error {
 	f.created = append(f.created, m)
 	return nil
 }
-func (f *fakeDataplane) DeleteMaster(swIfIndex uint32) error {
-	f.deleted = append(f.deleted, swIfIndex)
+func (f *fakeDataplane) DeleteMaster(m Memif) error {
+	f.deleted = append(f.deleted, m.SwIfIndex)
 	return nil
 }
+func (f *fakeDataplane) SweepOrphanSockets(map[string]struct{}) (int, error) { return 0, nil }
 
 func TestReconcile(t *testing.T) {
 	A := Memif{Socket: "/run/vpp/app1/a.sock", BridgeID: 100, Mode: "ethernet"}
