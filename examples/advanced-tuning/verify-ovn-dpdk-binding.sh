@@ -142,7 +142,13 @@ traffic with the Neutron-assigned MAC (and IP), or OVN port-security/flows drop
 it. Verify with a DPDK app, e.g. testpmd:
 
   testpmd -l <cores> --vdev=net_virtio_user0,path=$SOCK_PATH,server=1,mac=$NEUTRON_MAC -- -i
-${NEUTRON_IP:+  # configure $NEUTRON_IP inside the app's stack}
+EOF
+
+if [ -n "$NEUTRON_IP" ]; then
+  echo "  # configure $NEUTRON_IP inside the app stack"
+fi
+
+cat <<EOF
 
 Then from another port on the SAME OVN logical switch, ping this port's IP and
 confirm bidirectional traffic. If binding (Step 3) passed but traffic fails,

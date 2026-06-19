@@ -1,105 +1,81 @@
 name: Go-static-analysis
-on: [push, pull_request]
+
+on:
+  push:
+  pull_request:
 
 permissions:
   contents: read
 
 jobs:
-
-  golangci:
-    name: Lint
+  go-check:
+    name: Go checks
     runs-on: ubuntu-latest
     steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@c95a14d0e5bab51a9f56296a4eb0e416910cd350 # v2.10.3
-        with:
-          egress-policy: audit
+      - name: Check out repository
+        uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        uses: actions/setup-go@v6
         with:
-          go-version: 1.22.3
+          go-version-file: go.mod
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3.5.3
-      - name: remove deployer container from dockerfile
-        run: sed -ie '/End of builder/,+5d' ./docker/userspacecni/Dockerfile
-      - name: Build the Docker image
-        run: docker build . -f ./docker/userspacecni/Dockerfile -t userspacecni:latest
-      - name: run container
-        run: docker run --name userspacecni -itd userspacecni:latest bash
-      - name: docker copy generated bin api files
-        run: docker cp userspacecni:/root/userspace-cni-network-plugin/cnivpp ./
+      - name: Check formatting
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            echo "$files"
+            exit 1
+          fi
 
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@ec5d18412c0aeab7936cb16880d708ba2a64e1ae # v6.2.0
-        with:
-          # Required: the version of golangci-lint is required and must be specified without patch version: we always use the latest patch version.
-          version: v1.56.2
-          args: --timeout=20m
+      - name: Vet stable packages
+        run: >
+          go vet
+          ./logging
+          ./pkg/annotations
+          ./pkg/daemon
+          ./pkg/k8sclient
+          ./pkg/types
+          ./usrspcni
+
+      - name: Check module files
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
 
   shellcheck:
-    name: Shellcheck
+    name: ShellCheck
     runs-on: ubuntu-latest
     steps:
-    - name: Harden Runner
-      uses: step-security/harden-runner@c95a14d0e5bab51a9f56296a4eb0e416910cd350 # v2.10.3
-      with:
-        egress-policy: audit
+      - name: Check out repository
+        uses: actions/checkout@v5
 
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3.5.3
-    - name: Run ShellCheck
-      uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # main
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run ShellCheck
+        run: |
+          shellcheck examples/advanced-tuning/verify-ovn-dpdk-binding.sh
 
   hadolint:
-    runs-on: ubuntu-latest
     name: Hadolint
-    env:
-      HADOLINT_RECURSIVE: "true"
-    steps:
-    - name: Harden Runner
-      uses: step-security/harden-runner@c95a14d0e5bab51a9f56296a4eb0e416910cd350 # v2.10.3
-      with:
-        egress-policy: audit
-
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-    - uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
-      name: Run Hadolint
-      with:
-       recursive: true
-       ignore: DL3008,DL3059,DL3015
-
-  go-check:
     runs-on: ubuntu-latest
     steps:
-    - name: Harden Runner
-      uses: step-security/harden-runner@c95a14d0e5bab51a9f56296a4eb0e416910cd350 # v2.10.3
-      with:
-        egress-policy: audit
+      - name: Check out repository
+        uses: actions/checkout@v5
 
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3.5.2
+      - name: Run Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: docker/Dockerfile
+          ignore: DL3008,DL3059,DL3015
 
-    - name: remove deployer container from dockerfile
-      run: sed -ie '/End of builder/,+5d' ./docker/userspacecni/Dockerfile
-    - name: Build the Docker image
-      run: docker build . -f ./docker/userspacecni/Dockerfile -t userspacecni:latest
-    - name: run container
-      run: docker run --name userspacecni -itd userspacecni:latest bash
-    - name: docker copy generated bin api files
-      run: docker cp userspacecni:/root/userspace-cni-network-plugin/cnivpp ./
+  docker-build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
 
-    - name: Set up Go
-      uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
-      with:
-        go-version: 1.22.3
-
-    - name: Checkout dockerfile to avoid false diff
-      run: git checkout ./docker/userspacecni/Dockerfile
-    # if this fails, run go mod tidy
-    - name: Tidy
-      run: go mod tidy
-    - name: Check if module files are consistent with code
-      run: git diff --exit-code
-
-    # if this fails, run go mod vendor
-    - name: Check if vendor directory is consistent with go modules
-      run: go mod vendor && git diff --exit-code
+      - name: Build userspace CNI image
+        run: docker build . -f docker/Dockerfile -t userspacecni:ci
