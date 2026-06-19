@@ -237,10 +237,12 @@ func CmdAdd(args *skel.CmdArgs, exec invoke.Exec, kubeClient kubernetes.Interfac
 		newResult.Interfaces = result.Interfaces
 		//newResult.Interfaces[0].Mac = macAddr
 
-		// Clear out the Gateway if set by IPAM, not being used.
-		for _, ip := range newResult.IPs {
-			ip.Gateway = nil
-		}
+		// Preserve the IPAM-assigned gateway (and routes) in the Result. IPAM owns the
+		// L3 plan; userspace-cni only conveys it. The gateway rides along in the
+		// ConfigurationData (IPResult) saved for the container, so the pod's own
+		// dataplane (its VPP/DPDK) can install a default route via it — e.g. to the node
+		// VPP bridge-domain BVI. (Previously this cleared ip.Gateway as "not used",
+		// which discarded IPAM's output and broke egress for userspace interfaces.)
 
 		result = newResult
 	}
