@@ -52,11 +52,51 @@ type Reconciler struct {
 	Pods PodLister
 	NADs NADConfigGetter
 	DP   Dataplane
-	// GCOrphan gates orphan deletion (see Reconcile). nil deletes every orphan;
-	// the daemon sets it to SocketGone.
-	GCOrphan func(Memif) bool
+	// Grace is how many consecutive reconciles a socket-present orphan must persist
+	// before it is GC'd (see shouldGC). 0 keeps the conservative SocketGone-only
+	// behaviour (delete only once the socket file is gone).
+	Grace int
 	// Status, if set, receives connection/reconcile observability updates.
 	Status *Status
+
+	orphanSeen map[string]orphanRound
+	round      int
+}
+
+// orphanRound records how many consecutive reconciles a socket has been an orphan.
+type orphanRound struct{ count, lastRound int }
+
+// shouldGC decides whether an orphan master (one with no backing live pod) may be
+// deleted. A vanished socket file means CNI has fully torn the memif down → delete
+// immediately. A present socket could still be an in-flight CNI ADD, so it is only
+// deleted once it has stayed an orphan for Grace consecutive reconciles — an
+// in-flight ADD's pod appears within one cycle and so never reaches the threshold.
+// This is what lets the periodic reconcile reclaim a memif leaked by a failed
+// sandbox whose socket file lingers (CNI DEL never completed).
+func (r *Reconciler) shouldGC(m Memif) bool {
+	if SocketGone(m) {
+		delete(r.orphanSeen, m.Socket)
+		return true
+	}
+	if r.Grace <= 0 {
+		return false
+	}
+	if r.orphanSeen == nil {
+		r.orphanSeen = map[string]orphanRound{}
+	}
+	rec := r.orphanSeen[m.Socket]
+	if rec.lastRound == r.round-1 {
+		rec.count++ // still orphan this round, consecutive
+	} else {
+		rec.count = 1 // a gap reset the streak
+	}
+	rec.lastRound = r.round
+	r.orphanSeen[m.Socket] = rec
+	if rec.count >= r.Grace {
+		delete(r.orphanSeen, m.Socket)
+		return true
+	}
+	return false
 }
 
 // Sync builds the desired set of memif masters from the live node-local pods and
@@ -65,10 +105,11 @@ type Reconciler struct {
 // A pod whose intent cannot be evaluated (e.g. its NAD is transiently unreadable)
 // is logged and SKIPPED rather than aborting the whole node's reconcile — at
 // scale (e.g. a boot storm) one bad pod must not block every other pod's restore.
-// Skipping a pod is safe for GC because deletion is gated by GCOrphan (SocketGone):
-// a skipped-but-live pod keeps its socket file, so its memif is never GC'd; it is
+// Skipping a pod is safe for GC because deletion is gated by shouldGC: a
+// skipped-but-live pod keeps its socket file, so its memif is never GC'd; it is
 // simply restored on a later reconcile once its intent is readable.
 func (r *Reconciler) Sync(ctx context.Context) (created, deleted int, err error) {
+	r.round++
 	pods, err := r.Pods.ListNodePods(ctx)
 	if err != nil {
 		return 0, 0, fmt.Errorf("list node pods: %w", err)
@@ -103,5 +144,5 @@ func (r *Reconciler) Sync(ctx context.Context) (created, deleted int, err error)
 		}
 		desired = append(desired, ms...)
 	}
-	return Reconcile(r.DP, desired, r.GCOrphan)
+	return Reconcile(r.DP, desired, r.shouldGC)
 }

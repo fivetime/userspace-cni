@@ -156,8 +156,13 @@ above.
 
 - Desired source: live-pods+annotations (preferred) vs an ADD-time node-local
   state file — pick one.
-- Whether to also run a slow periodic safety reconcile in addition to the
-  reconnect trigger (default: reconnect-only).
+- ~~Whether to also run a slow periodic safety reconcile~~ — **done.** The daemon
+  reconciles every `reconcilePeriod` (default 2m) while connected, in addition to
+  the reconnect trigger, so out-of-band drift converges without a VPP restart. To
+  reclaim a memif leaked by a failed sandbox (CNI DEL never ran, so its socket
+  lingers), GC now also deletes an orphan with no backing pod for `Grace`
+  consecutive reconciles (default 2) — an in-flight ADD's pod appears within one
+  cycle and so is never mistaken for an orphan.
 - Socket-id allocation races between the daemon and concurrent CNI ADD/DEL.
 - Detecting a genuinely fresh VPP instance vs a brief blip — current answer:
   don't; reconcile idempotently on every `Connected`.

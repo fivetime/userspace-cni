@@ -38,6 +38,10 @@ const (
 	runRetryBackoff   = 2 * time.Second
 	// reconcileDebounce coalesces a burst of (re)connect events into one reconcile.
 	reconcileDebounce = time.Second
+	// reconcilePeriod re-reconciles while connected even with no VPP event, so
+	// orphans that appear out-of-band (e.g. a memif leaked by a failed sandbox
+	// whose CNI DEL never ran) are reclaimed without waiting for a VPP restart.
+	reconcilePeriod = 2 * time.Minute
 )
 
 // Run watches the node VPP connection and re-asserts this node's memif masters
@@ -77,6 +81,12 @@ func (r *Reconciler) watchOnce(ctx context.Context, apiSocket, socketPrefix stri
 	debounce.Stop()
 	defer debounce.Stop()
 
+	// Periodic safety reconcile: re-reconcile while connected even absent a VPP
+	// event, so out-of-band drift (orphans, missed DELs) converges on its own.
+	ticker := time.NewTicker(reconcilePeriod)
+	defer ticker.Stop()
+
+	connected := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -88,12 +98,14 @@ func (r *Reconciler) watchOnce(ctx context.Context, apiSocket, socketPrefix stri
 			switch ev.State {
 			case core.Connected:
 				logging.Infof("restore-daemon: VPP connected; reconcile in %s", reconcileDebounce)
+				connected = true
 				if r.Status != nil {
 					r.Status.SetConnected(true)
 				}
 				debounce.Reset(reconcileDebounce)
 			case core.Disconnected:
 				logging.Infof("restore-daemon: VPP disconnected; will re-assert memifs on reconnect")
+				connected = false
 				if r.Status != nil {
 					r.Status.SetConnected(false)
 				}
@@ -106,6 +118,10 @@ func (r *Reconciler) watchOnce(ctx context.Context, apiSocket, socketPrefix stri
 			}
 		case <-debounce.C:
 			r.onConnected(ctx, conn, socketPrefix)
+		case <-ticker.C:
+			if connected {
+				r.onConnected(ctx, conn, socketPrefix)
+			}
 		}
 	}
 }

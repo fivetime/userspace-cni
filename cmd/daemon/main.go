@@ -40,6 +40,7 @@ import (
 
 func main() {
 	var apiSocket, socketPrefix, logLevel, metricsAddr string
+	var gcGrace int
 	flag.StringVar(&apiSocket, "vpp-api-socket", "",
 		"VPP binary API socket (empty = govpp default /run/vpp/api.sock)")
 	flag.StringVar(&socketPrefix, "socket-prefix", "",
@@ -48,6 +49,8 @@ func main() {
 		"log level (verbose|debug|info|warning|error|panic)")
 	flag.StringVar(&metricsAddr, "metrics-addr", ":9101",
 		"listen address for /healthz, /readyz and /metrics")
+	flag.IntVar(&gcGrace, "gc-grace", 2,
+		"consecutive reconciles a socket-present orphan must persist before GC (0 = only GC once its socket is gone)")
 	flag.Parse()
 
 	// Log to stderr at the requested level so `kubectl logs` surfaces the
@@ -79,10 +82,10 @@ func main() {
 
 	status := &daemon.Status{}
 	r := &daemon.Reconciler{
-		Pods:     daemon.K8sPodLister{Client: clientset, NodeName: nodeName},
-		NADs:     daemon.K8sNADGetter{Dyn: dyn},
-		GCOrphan: daemon.SocketGone,
-		Status:   status,
+		Pods:   daemon.K8sPodLister{Client: clientset, NodeName: nodeName},
+		NADs:   daemon.K8sNADGetter{Dyn: dyn},
+		Grace:  gcGrace,
+		Status: status,
 	}
 
 	go func() {
