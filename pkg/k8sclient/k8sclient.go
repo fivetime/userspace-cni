@@ -16,7 +16,6 @@ package k8sclient
 
 import (
 	"context"
-	"net"
 	"os"
 
 	v1 "k8s.io/api/core/v1"
@@ -35,7 +34,12 @@ import (
 // k8sArgs is the valid CNI_ARGS used for Kubernetes
 type k8sArgs struct {
 	cnitypes.CommonArgs
-	IP                         net.IP
+	// IP is the CNI_ARGS "IP" pair (set by Multus for the "ips" capability / static IP
+	// requests). It is parsed as a raw string, NOT net.IP: a dual-stack request arrives
+	// comma-joined ("IP=<v4>,<v6>") which net.IP cannot parse, and userspace-cni does not
+	// use the value anyway (it only needs the K8S_POD_* fields). Keeping it as a tolerant
+	// string lets GetPod succeed so the IPAM delegate (e.g. nv-ipam) honours the static IPs.
+	IP                         cnitypes.UnmarshallableString
 	K8S_POD_NAME               cnitypes.UnmarshallableString
 	K8S_POD_NAMESPACE          cnitypes.UnmarshallableString
 	K8S_POD_INFRA_CONTAINER_ID cnitypes.UnmarshallableString

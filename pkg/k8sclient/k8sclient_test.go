@@ -17,7 +17,6 @@ package k8sclient
 import (
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"testing"
 
@@ -46,7 +45,7 @@ func TestGetK8sArgs(t *testing.T) {
 		{
 			name:    "args set correctly",
 			args:    &skel.CmdArgs{Args: "IgnoreUnknown=true;IP=127.0.0.1;K8S_POD_NAME=testpod;K8S_POD_NAMESPACE=testspace;K8S_POD_INFRA_CONTAINER_ID=0"},
-			expArgs: &k8sArgs{CommonArgs: cnitypes.CommonArgs{IgnoreUnknown: true}, IP: net.IPv4(127, 0, 0, 1), K8S_POD_NAME: "testpod", K8S_POD_NAMESPACE: "testspace", K8S_POD_INFRA_CONTAINER_ID: "0"},
+			expArgs: &k8sArgs{CommonArgs: cnitypes.CommonArgs{IgnoreUnknown: true}, IP: "127.0.0.1", K8S_POD_NAME: "testpod", K8S_POD_NAMESPACE: "testspace", K8S_POD_INFRA_CONTAINER_ID: "0"},
 		},
 		{
 			name:    "ingnore unknown arg",
@@ -54,9 +53,12 @@ func TestGetK8sArgs(t *testing.T) {
 			expArgs: &k8sArgs{CommonArgs: cnitypes.CommonArgs{IgnoreUnknown: true}},
 		},
 		{
-			name:   "fail with invalid IP",
-			args:   &skel.CmdArgs{Args: "IP=512.0.0.1;K8S_POD_NAME=testpod"},
-			expErr: errors.New("ARGS: error parsing"),
+			// A dual-stack static-IP request arrives as a comma-joined "IP" arg, which a
+			// net.IP field could not parse. It is now a tolerant string, so parsing
+			// succeeds and the IPAM delegate can honour both IPs.
+			name:    "dual-stack IP arg is tolerated",
+			args:    &skel.CmdArgs{Args: "IgnoreUnknown=true;IP=10.66.0.250,fc00:66::250;K8S_POD_NAME=testpod;K8S_POD_NAMESPACE=testspace;K8S_POD_INFRA_CONTAINER_ID=0"},
+			expArgs: &k8sArgs{CommonArgs: cnitypes.CommonArgs{IgnoreUnknown: true}, IP: "10.66.0.250,fc00:66::250", K8S_POD_NAME: "testpod", K8S_POD_NAMESPACE: "testspace", K8S_POD_INFRA_CONTAINER_ID: "0"},
 		},
 		{
 			name:   "fail with unknown arg",
